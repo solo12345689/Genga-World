@@ -1,0 +1,43 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+debug.keystore
+
+# IDE and Agent system files
+.antigravity
+.vscode/
+
+# Python environment and caches
+venv/
+__pycache__/
+*.pyc
+scratch/
+moviebox_api/
+moviebox_api_server.py
+start_backend.sh
+
+
+# Android keys and builds
+*.jks
+*.apk
+
+# Temporary API dumps and download logs
+*_download.txt
+api_doc.txt
+movies.json
+metadata.json
+

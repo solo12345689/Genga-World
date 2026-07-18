@@ -1,0 +1,2 @@
+# Exclude Python server from GitHub language statistics
+*.py linguist-vendored
