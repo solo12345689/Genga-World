@@ -416,8 +416,18 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         isDashboardLoading = true
         viewModelScope.launch {
             try {
-                _trendingMovies.value = repository.getTrending(1, 20)
-                _categoryMovies.value = repository.getCategoryList(selectedCategoryTab, 1, 30)
+                val trending = repository.getTrending(1, 20)
+                _trendingMovies.value = trending
+                val categories = repository.getCategoryList(selectedCategoryTab, 1, 30)
+                _categoryMovies.value = categories
+                
+                // Pre-fetch details in the background for instant load
+                trending.take(12).forEach { item ->
+                    launch { repository.getDetail(item.id) }
+                }
+                categories.take(12).forEach { item ->
+                    launch { repository.getDetail(item.id) }
+                }
             } catch (e: Exception) {
                 android.util.Log.e("MovieViewModel", "Failed to load dashboard content", e)
             } finally {
@@ -429,7 +439,12 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     fun loadCategoryList(categoryId: Int) {
         selectedCategoryTab = categoryId
         viewModelScope.launch {
-            _categoryMovies.value = repository.getCategoryList(categoryId, 1, 30)
+            val categories = repository.getCategoryList(categoryId, 1, 30)
+            _categoryMovies.value = categories
+            // Pre-fetch details in the background
+            categories.take(12).forEach { item ->
+                launch { repository.getDetail(item.id) }
+            }
         }
     }
 
@@ -443,42 +458,87 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         loadSearchSuggestions(query)
         isSearching = true
         viewModelScope.launch {
-            _searchResults.value = repository.search(query)
+            val results = repository.search(query)
+            _searchResults.value = results
             isSearching = false
+            // Pre-fetch search results in the background
+            results.take(10).forEach { item ->
+                launch { repository.getDetail(item.id) }
+            }
+        }
+    }
+
+    private fun setupSubjectWithDetail(detail: MovieSubject) {
+        selectedSubject = detail
+        originalSubjectDetail = detail
+        
+        val autoMatch = detail.resourceDetectors.find { detector ->
+            val titleMatch = Regex("\\[(.*?)\\]|\\((.*?)\\)").find(detail.name)
+            val extractedLang = titleMatch?.groupValues?.find { v -> v.isNotEmpty() && v != titleMatch.value } ?: ""
+            extractedLang.isNotEmpty() && detector.name.contains(extractedLang, ignoreCase = true)
+        } ?: detail.resourceDetectors.firstOrNull()
+        selectedResource = autoMatch
+
+        if (autoMatch != null && autoMatch.resourceId.startsWith("dub_")) {
+            val dubSubjectId = autoMatch.resourceId.substringAfter("dub_")
+            val dubDetail = repository.getCachedDetail(dubSubjectId)
+            if (dubDetail != null) {
+                selectedSubject = dubDetail
+                val rawSeasons = if (dubDetail.isTvShow) dubDetail.seasonList.filter { it.episodeList.isNotEmpty() }.map { it.season }.sorted() else emptyList()
+                seasonsList = if (maxSeasonLimitConstraint != null) rawSeasons.filter { it <= maxSeasonLimitConstraint!! } else rawSeasons
+                if (!seasonsList.contains(selectedSeason)) {
+                    selectedSeason = seasonsList.firstOrNull() ?: 1
+                }
+                episodesList = repository.getCachedEpisodes(dubSubjectId, selectedSeason)
+            } else {
+                val rawSeasons = if (detail.isTvShow) detail.seasonList.filter { it.episodeList.isNotEmpty() }.map { it.season }.sorted() else emptyList()
+                seasonsList = if (maxSeasonLimitConstraint != null) rawSeasons.filter { it <= maxSeasonLimitConstraint!! } else rawSeasons
+                if (!seasonsList.contains(selectedSeason)) {
+                    selectedSeason = seasonsList.firstOrNull() ?: 1
+                }
+                episodesList = repository.getCachedEpisodes(detail.id, selectedSeason)
+            }
+        } else {
+            val rawSeasons = if (detail.isTvShow) detail.seasonList.filter { it.episodeList.isNotEmpty() }.map { it.season }.sorted() else emptyList()
+            seasonsList = if (maxSeasonLimitConstraint != null) rawSeasons.filter { it <= maxSeasonLimitConstraint!! } else rawSeasons
+            if (!seasonsList.contains(selectedSeason)) {
+                selectedSeason = seasonsList.firstOrNull() ?: 1
+            }
+            episodesList = repository.getCachedEpisodes(detail.id, selectedSeason)
         }
     }
 
     fun selectSubject(subject: MovieSubject) {
-        selectedSubject = subject
-        originalSubjectDetail = subject
         maxSeasonLimitConstraint = parseMaxSeasonFromName(subject.name)
-        val initialSeasons = if (subject.isTvShow) (1..subject.totalSeasons).toList() else emptyList()
-        seasonsList = if (maxSeasonLimitConstraint != null) initialSeasons.filter { it <= maxSeasonLimitConstraint!! } else initialSeasons
         currentEpisode = null
         playInfo = null
-        val autoMatch = subject.resourceDetectors.find { detector ->
-            val titleMatch = Regex("\\[(.*?)\\]|\\((.*?)\\)").find(subject.name)
-            val extractedLang = titleMatch?.groupValues?.find { v -> v.isNotEmpty() && v != titleMatch.value } ?: ""
-            extractedLang.isNotEmpty() && detector.name.contains(extractedLang, ignoreCase = true)
-        } ?: subject.resourceDetectors.firstOrNull()
-        selectedResource = autoMatch
+
+        // Check cache for instant load
+        val cachedDetail = repository.getCachedDetail(subject.id)
+        if (cachedDetail != null) {
+            setupSubjectWithDetail(cachedDetail)
+        } else {
+            selectedSubject = subject
+            originalSubjectDetail = subject
+            val initialSeasons = if (subject.isTvShow) (1..subject.totalSeasons).toList() else emptyList()
+            seasonsList = if (maxSeasonLimitConstraint != null) initialSeasons.filter { it <= maxSeasonLimitConstraint!! } else initialSeasons
+            val autoMatch = subject.resourceDetectors.find { detector ->
+                val titleMatch = Regex("\\[(.*?)\\]|\\((.*?)\\)").find(subject.name)
+                val extractedLang = titleMatch?.groupValues?.find { v -> v.isNotEmpty() && v != titleMatch.value } ?: ""
+                extractedLang.isNotEmpty() && detector.name.contains(extractedLang, ignoreCase = true)
+            } ?: subject.resourceDetectors.firstOrNull()
+            selectedResource = autoMatch
+        }
         
         viewModelScope.launch {
             try {
                 val fullDetail = repository.getDetail(subject.id)
                 if (fullDetail != null) {
-                    selectedSubject = fullDetail
-                    originalSubjectDetail = fullDetail
+                    setupSubjectWithDetail(fullDetail)
                     
-                    val fullAutoMatch = fullDetail.resourceDetectors.find { detector ->
-                        val titleMatch = Regex("\\[(.*?)\\]|\\((.*?)\\)").find(fullDetail.name)
-                        val extractedLang = titleMatch?.groupValues?.find { v -> v.isNotEmpty() && v != titleMatch.value } ?: ""
-                        extractedLang.isNotEmpty() && detector.name.contains(extractedLang, ignoreCase = true)
-                    } ?: fullDetail.resourceDetectors.firstOrNull()
-                    selectedResource = fullAutoMatch
-
-                    if (fullAutoMatch != null && fullAutoMatch.resourceId.startsWith("dub_")) {
-                        val dubSubjectId = fullAutoMatch.resourceId.substringAfter("dub_")
+                    val currentAutoMatch = selectedResource
+                    if (currentAutoMatch != null && currentAutoMatch.resourceId.startsWith("dub_")) {
+                        val dubSubjectId = currentAutoMatch.resourceId.substringAfter("dub_")
                         val dubDetail = repository.getDetail(dubSubjectId)
                         if (dubDetail != null) {
                             selectedSubject = dubDetail
@@ -489,13 +549,6 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             episodesList = repository.getEpisodes(dubSubjectId, selectedSeason)
                         }
-                    } else {
-                        val rawSeasons = if (fullDetail.isTvShow) fullDetail.seasonList.filter { it.episodeList.isNotEmpty() }.map { it.season }.sorted() else emptyList()
-                        seasonsList = if (maxSeasonLimitConstraint != null) rawSeasons.filter { it <= maxSeasonLimitConstraint!! } else rawSeasons
-                        if (!seasonsList.contains(selectedSeason)) {
-                            selectedSeason = seasonsList.firstOrNull() ?: 1
-                        }
-                        episodesList = repository.getEpisodes(fullDetail.id, selectedSeason)
                     }
                 }
             } catch (e: Exception) {

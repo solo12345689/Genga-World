@@ -84,6 +84,24 @@ class MovieRepository(
         }
     }
 
+    fun getCachedDetail(subjectId: String): MovieSubject? {
+        return detailCache[subjectId]
+    }
+
+    fun getCachedEpisodes(subjectId: String, season: Int): List<Episode> {
+        val detail = detailCache[subjectId] ?: return emptyList()
+        val seasonInfo = detail.seasonList.find { it.season == season } ?: return emptyList()
+        return seasonInfo.episodeList.map { epInfo ->
+            Episode(
+                episodeId = "${subjectId}_S${season}_E${epInfo.episode}",
+                title = epInfo.title.ifEmpty { "Episode ${epInfo.episode}" },
+                episodeNumber = epInfo.episode,
+                seasonNumber = season,
+                stillPath = epInfo.stillPath
+            )
+        }
+    }
+
     suspend fun getDetail(subjectId: String): MovieSubject? = withContext(Dispatchers.IO) {
         val cached = detailCache[subjectId]
         if (cached != null) return@withContext cached

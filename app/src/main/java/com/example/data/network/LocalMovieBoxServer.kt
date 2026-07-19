@@ -216,15 +216,10 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
 
                     val payload = mutableMapOf<String, Any>(
                         "package_name" to "com.community.mbox.in",
-                        "type" to type
+                        "type" to type,
+                        "mail" to account,
+                        "authType" to 1
                     )
-                    if (account.contains("@")) {
-                        payload["mail"] = account
-                        payload["authType"] = 1
-                    } else {
-                        payload["phone"] = account
-                        payload["authType"] = 0
-                    }
 
                     val payloadString = toJsonString(payload)
                     val rawResponse = makeOfficialRequest("POST", "/wefeed-mobile-bff/user-api/get-sms-code", emptyMap(), payloadString)
@@ -249,16 +244,10 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                     val payload = mutableMapOf<String, Any>(
                         "password" to hashedPwd,
                         "package_name" to "com.community.mbox.in",
-                        "authType" to authType,
-                        "type" to 0
+                        "authType" to 1,
+                        "type" to 0,
+                        "mail" to account
                     )
-                    if (account.contains("@")) {
-                        payload["mail"] = account
-                        payload["authType"] = 1
-                    } else {
-                        payload["phone"] = account
-                        payload["authType"] = 0
-                    }
 
                     val payloadString = toJsonString(payload)
                     val rawResponse = makeOfficialRequest("POST", "/wefeed-mobile-bff/user-api/login", emptyMap(), payloadString)
@@ -305,16 +294,10 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         "password" to hashedPwd,
                         "verificationCode" to otp,
                         "package_name" to "com.community.mbox.in",
-                        "authType" to authType,
-                        "type" to 1
+                        "authType" to 1,
+                        "type" to 1,
+                        "mail" to account
                     )
-                    if (account.contains("@")) {
-                        payload["mail"] = account
-                        payload["authType"] = 1
-                    } else {
-                        payload["phone"] = account
-                        payload["authType"] = 0
-                    }
 
                     val payloadString = toJsonString(payload)
                     android.util.Log.d("LocalMovieBoxServer", "Register payload: $payloadString")

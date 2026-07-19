@@ -584,78 +584,99 @@ fun HomeScreen(viewModel: MovieViewModel) {
             .fillMaxSize()
             .background(ObsidianDark)
     ) {
-        // Hero Slider/Banner Section
+        // Hero Slider/Banner Section (Auto-cycling Carousel)
         if (trending.isNotEmpty()) {
             item {
-                val heroMovie = trending.first()
+                val bannerMovies = trending.take(5)
+                val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { bannerMovies.size })
+                
+                LaunchedEffect(pagerState, bannerMovies) {
+                    while (bannerMovies.isNotEmpty()) {
+                        kotlinx.coroutines.delay(4000)
+                        val nextPage = (pagerState.currentPage + 1) % bannerMovies.size
+                        pagerState.animateScrollToPage(nextPage)
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(350.dp)
-                        .clickable { viewModel.selectSubject(heroMovie) }
                 ) {
-                    AsyncImage(
-                        model = heroMovie.poster,
-                        contentDescription = heroMovie.name,
-                        contentScale = ContentScale.Crop,
+                    androidx.compose.foundation.pager.HorizontalPager(
+                        state = pagerState,
                         modifier = Modifier.fillMaxSize()
-                    )
-                    // Gradient shading
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        ObsidianDark
-                                    )
-                                )
-                            )
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomStart)
-                            .padding(20.dp)
-                    ) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = CinematicRed),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.padding(bottom = 8.dp)
+                    ) { page ->
+                        val heroMovie = bannerMovies[page]
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable { viewModel.selectSubject(heroMovie) }
                         ) {
-                            Text(
-                                text = "TRENDING",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            AsyncImage(
+                                model = heroMovie.poster,
+                                contentDescription = heroMovie.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
                             )
-                        }
-                        Text(
-                            text = heroMovie.name,
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = heroMovie.genres.joinToString(" • "),
-                            fontSize = 13.sp,
-                            color = TextSecondary
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row {
-                            Button(
-                                onClick = { viewModel.selectSubject(heroMovie) },
-                                colors = ButtonDefaults.buttonColors(containerColor = CinematicRed),
-                                shape = RoundedCornerShape(8.dp)
+                            // Gradient shading
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                ObsidianDark
+                                            )
+                                        )
+                                    )
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomStart)
+                                    .padding(20.dp)
                             ) {
-                                Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Details & Play", fontWeight = FontWeight.Bold)
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = CinematicRed),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "TRENDING",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Text(
+                                    text = heroMovie.name,
+                                    fontSize = 28.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = heroMovie.genres.joinToString(" • "),
+                                    fontSize = 13.sp,
+                                    color = TextSecondary
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row {
+                                    Button(
+                                        onClick = { viewModel.selectSubject(heroMovie) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = CinematicRed),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Details & Play", fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1671,14 +1692,11 @@ fun PlayerScreen(viewModel: MovieViewModel) {
     val subtitleUrl = viewModel.selectedSubtitle?.url
 
     var activeSheet by remember { mutableStateOf<String?>(null) }
-    var isFullscreen by remember { mutableStateOf(false) }
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
     val screenHeight = configuration.screenHeightDp.dp
+    val isFullscreen = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val playerHeight = minOf(screenWidth * (9f / 16f), screenHeight * 0.32f)
-    LaunchedEffect(configuration.orientation) {
-        isFullscreen = (configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
-    }
     var isControllerVisible by remember { mutableStateOf(true) }
 
     // Initialize Media3 ExoPlayer
@@ -1898,15 +1916,7 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                 .fillMaxSize()
                 .then(if (!isFullscreen) Modifier.statusBarsPadding() else Modifier)
         ) {
-            if (!isFullscreen && !isInPip) {
-                Text(
-                    text = subject.name,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                )
-            }
+
             // Player Container (Always present in tree at index 0)
         Box(
             modifier = if (isFullscreen || isInPip) {
@@ -2443,6 +2453,7 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                             }
                         }
                     } else {
+
                         // Resource and Season selectors section
                         Text(
                             text = "Resource / Season",
@@ -3261,6 +3272,10 @@ fun AccountScreen(viewModel: MovieViewModel) {
                                             errorMessage = "Please enter your email to request OTP"
                                             return@Button
                                         }
+                                        if (!email.contains("@") || !email.contains(".")) {
+                                            errorMessage = "Please enter a valid email address"
+                                            return@Button
+                                        }
                                         viewModel.requestOtp(email, isRegister = true, onSuccess = {
                                             errorMessage = ""
                                             statusMessage = "OTP sent to your email successfully!"
@@ -3289,6 +3304,10 @@ fun AccountScreen(viewModel: MovieViewModel) {
                             onClick = {
                                 if (email.isEmpty() || password.isEmpty()) {
                                     errorMessage = "Email and Password cannot be empty"
+                                    return@Button
+                                }
+                                if (!email.contains("@") || !email.contains(".")) {
+                                    errorMessage = "Please enter a valid email address"
                                     return@Button
                                 }
                                 if (isRegisterMode) {
