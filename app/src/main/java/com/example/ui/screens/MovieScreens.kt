@@ -52,6 +52,8 @@ import com.example.data.model.StreamItem
 import com.example.data.model.SubtitleItem
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.MovieViewModel
+import com.example.ui.viewmodel.ActiveDownload
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.viewinterop.AndroidView
@@ -61,9 +63,83 @@ import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import android.net.Uri
+import android.content.Intent
+import com.example.R
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import android.widget.Toast
 import androidx.compose.foundation.shape.CircleShape
+
+
+fun downloadVideo(context: android.content.Context, url: String, title: String, posterUrl: String = "") {
+    if (url.isEmpty()) {
+        android.widget.Toast.makeText(context, "Stream URL is empty", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val safeTitle = title.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val manager = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+        
+        if (posterUrl.isNotEmpty()) {
+            val safeShowName = Regex("(.*?)(_S\\d+E\\d+.*|$)").find(safeTitle)?.groupValues?.get(1)?.trim() ?: safeTitle
+
+            // 1. Instant Direct HTTP download (saves in 1-2 seconds)
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val gengaDir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES), "Genga World")
+                    if (!gengaDir.exists()) gengaDir.mkdirs()
+                    val titlePoster = java.io.File(gengaDir, "$safeTitle.jpg")
+                    val showPoster = if (safeShowName.isNotEmpty() && safeShowName != safeTitle) java.io.File(gengaDir, "$safeShowName.jpg") else null
+
+                    val conn = (java.net.URL(posterUrl).openConnection() as java.net.HttpURLConnection).apply {
+                        connectTimeout = 6000
+                        readTimeout = 6000
+                        instanceFollowRedirects = true
+                    }
+                    if (conn.responseCode in 200..299) {
+                        val bytes = conn.inputStream.use { it.readBytes() }
+                        if (bytes.isNotEmpty()) {
+                            if (!titlePoster.exists()) titlePoster.writeBytes(bytes)
+                            if (showPoster != null && !showPoster.exists()) showPoster.writeBytes(bytes)
+                        }
+                    }
+                } catch (e: Exception) { }
+            }
+
+            // 2. Also register in DownloadManager as system fallback
+            try {
+                val posterRequest = android.app.DownloadManager.Request(android.net.Uri.parse(posterUrl))
+                posterRequest.setTitle("$title Poster")
+                posterRequest.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_HIDDEN)
+                posterRequest.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_MOVIES, "Genga World/$safeTitle.jpg")
+                manager.enqueue(posterRequest)
+
+                if (safeShowName.isNotEmpty() && safeShowName != safeTitle) {
+                    val showPosterFile = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES), "Genga World/$safeShowName.jpg")
+                    if (!showPosterFile.exists()) {
+                        val showPosterRequest = android.app.DownloadManager.Request(android.net.Uri.parse(posterUrl))
+                        showPosterRequest.setTitle("$safeShowName Poster")
+                        showPosterRequest.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_HIDDEN)
+                        showPosterRequest.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_MOVIES, "Genga World/$safeShowName.jpg")
+                        manager.enqueue(showPosterRequest)
+                    }
+                }
+            } catch (e: Exception) { }
+        }
+
+        val request = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+        val fileName = "$safeTitle.mp4"
+        request.setTitle(title)
+        request.setDescription("Downloading...")
+        request.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_MOVIES, "Genga World/$fileName")
+        manager.enqueue(request)
+        android.widget.Toast.makeText(context, "Download started...", android.widget.Toast.LENGTH_SHORT).show()
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(context, "Failed to start download: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
 
 @Composable
 fun MovieBoxApp(viewModel: MovieViewModel) {
@@ -234,10 +310,442 @@ fun LockoutScreen(viewModel: MovieViewModel) {
     }
 }
 
+@Composable
+fun TelegramJoinDialog(
+    onDismiss: () -> Unit,
+    telegramUrl: String = "https://t.me/Gengaworldofficial"
+) {
+    val context = LocalContext.current
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.86f)
+                .wrapContentHeight(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1F24)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                // App Logo
+                Image(
+                    painter = painterResource(id = R.drawable.ic_launcher_fg),
+                    contentDescription = "Genga World Logo",
+                    modifier = Modifier.size(68.dp)
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Title
+                Text(
+                    text = "Join the Genga Family",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Subtitle / Description
+                Text(
+                    text = "Be a special member of our Telegram family \u2014 get early access, request titles, and hear about new features first.",
+                    color = Color(0xFFB0B3B8),
+                    fontSize = 13.5.sp,
+                    lineHeight = 19.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Action Button: Join Telegram
+                Button(
+                    onClick = {
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(telegramUrl))
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Could not open Telegram: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0EA2DE))
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Send,
+                        contentDescription = "Telegram",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .rotate(-25f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Join Telegram",
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Dismiss: Maybe later
+                TextButton(
+                    onClick = onDismiss
+                ) {
+                    Text(
+                        text = "Maybe later",
+                        color = Color(0xFF8E8E93),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ForceUpdateFullScreen(
+    updateInfo: com.example.ui.viewmodel.MovieViewModel.AppUpdateInfo,
+    isDownloading: Boolean,
+    progress: Int,
+    statusText: String,
+    onUpdateClick: () -> Unit,
+    onGoToDownloads: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ObsidianDark)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            // App Logo with glowing red pulse
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .background(CinematicRed.copy(alpha = 0.15f), shape = CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_launcher_fg),
+                    contentDescription = "Genga World",
+                    modifier = Modifier.size(56.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Update Required to Continue",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Version ${updateInfo.latestVersionName} is now available",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = CinematicRed
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "What's New in this update:",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = updateInfo.changelog.ifEmpty { "Critical improvements, stream playback fixes, and security updates." },
+                        color = Color(0xFFB0B3B8),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            if (isDownloading) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    LinearProgressIndicator(
+                        progress = { if (progress > 0) progress / 100f else 0f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = CinematicRed,
+                        trackColor = Color(0xFF333338)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = if (statusText.isNotEmpty()) "Downloading: $statusText" else "Downloading update...",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onUpdateClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = CinematicRed)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = "Download",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Update Now",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedButton(
+                    onClick = onGoToDownloads,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF3A3B40))
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DownloadDone,
+                        contentDescription = "Offline Downloads",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Watch Offline Downloads",
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppUpdateDialog(
+    updateInfo: com.example.ui.viewmodel.MovieViewModel.AppUpdateInfo,
+    isDownloading: Boolean,
+    progress: Int,
+    statusText: String,
+    onUpdateClick: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = {
+            if (!isDownloading) onDismiss()
+        },
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = !isDownloading,
+            dismissOnClickOutside = !isDownloading,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.86f)
+                .wrapContentHeight(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1F24)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 14.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 26.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // App Logo / Update Icon
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(Color(0xFF0EA2DE).copy(alpha = 0.15f), shape = CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SystemUpdate,
+                        contentDescription = "Update",
+                        tint = Color(0xFF0EA2DE),
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "New Version Available",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Version ${updateInfo.latestVersionName}",
+                    color = CinematicRed,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                if (updateInfo.changelog.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = updateInfo.changelog,
+                            color = Color(0xFFB0B3B8),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "A new update is available with improvements and fixes.",
+                        color = Color(0xFFB0B3B8),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(22.dp))
+
+                if (isDownloading) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { if (progress > 0) progress / 100f else 0f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            color = CinematicRed,
+                            trackColor = Color(0xFF333338)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (statusText.isNotEmpty()) "Downloading: $statusText" else "Downloading update...",
+                            color = TextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = onUpdateClick,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0EA2DE))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = "Download",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Download & Install",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TextButton(onClick = onDismiss) {
+                        Text(
+                            text = "Later",
+                            color = Color(0xFF8E8E93),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun MainContent(viewModel: MovieViewModel) {
     var activeTab by remember { mutableStateOf("home") } // home, search, watchlist, history, account
+    val updateInfo = viewModel.availableUpdateInfo
+    val isForceUpdateActive = updateInfo?.isForceUpdate == true
+    var forceUpdateAllowDownloadsOnly by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val prefs = remember(context) { context.getSharedPreferences("app_settings_prefs", android.content.Context.MODE_PRIVATE) }
+    val lastShownMillis = remember { prefs.getLong("last_telegram_prompt_timestamp", 0L) }
+    val cooldownPeriodMillis = 168L * 60 * 60 * 1000 // 168 hours (7 days)
+    val shouldPromptTelegram = remember { (System.currentTimeMillis() - lastShownMillis) >= cooldownPeriodMillis }
+    var showTelegramDialog by rememberSaveable { mutableStateOf(shouldPromptTelegram) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -247,11 +755,56 @@ fun MainContent(viewModel: MovieViewModel) {
                         containerColor = ObsidianDark,
                         tonalElevation = 8.dp
                     ) {
+                        if (!isForceUpdateActive) {
+                            NavigationBarItem(
+                                selected = activeTab == "home",
+                                onClick = { activeTab = "home" },
+                                icon = { Icon(if (activeTab == "home") Icons.Filled.Home else Icons.Outlined.Home, contentDescription = "Home") },
+                                label = { Text("Home", fontSize = 11.sp) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = CinematicRed,
+                                    selectedTextColor = CinematicRed,
+                                    indicatorColor = ObsidianCard,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                ),
+                                modifier = Modifier.testTag("nav_home")
+                            )
+                            NavigationBarItem(
+                                selected = activeTab == "search",
+                                onClick = { activeTab = "search" },
+                                icon = { Icon(if (activeTab == "search") Icons.Filled.Search else Icons.Outlined.Search, contentDescription = "Search") },
+                                label = { Text("Search", fontSize = 11.sp) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = CinematicRed,
+                                    selectedTextColor = CinematicRed,
+                                    indicatorColor = ObsidianCard,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                ),
+                                modifier = Modifier.testTag("nav_search")
+                            )
+                            NavigationBarItem(
+                                selected = activeTab == "watchlist",
+                                onClick = { activeTab = "watchlist" },
+                                icon = { Icon(if (activeTab == "watchlist") Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, contentDescription = "Watchlist") },
+                                label = { Text("Watchlist", fontSize = 11.sp) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = CinematicRed,
+                                    selectedTextColor = CinematicRed,
+                                    indicatorColor = ObsidianCard,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                ),
+                                modifier = Modifier.testTag("nav_watchlist")
+                            )
+                        }
+
                         NavigationBarItem(
-                            selected = activeTab == "home",
-                            onClick = { activeTab = "home" },
-                            icon = { Icon(if (activeTab == "home") Icons.Filled.Home else Icons.Outlined.Home, contentDescription = "Home") },
-                            label = { Text("Home", fontSize = 11.sp) },
+                            selected = activeTab == "download",
+                            onClick = { activeTab = "download" },
+                            icon = { Icon(if (activeTab == "download") Icons.Filled.Download else Icons.Outlined.Download, contentDescription = "Download") },
+                            label = { Text("Download", fontSize = 11.sp) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = CinematicRed,
                                 selectedTextColor = CinematicRed,
@@ -259,64 +812,25 @@ fun MainContent(viewModel: MovieViewModel) {
                                 unselectedIconColor = TextSecondary,
                                 unselectedTextColor = TextSecondary
                             ),
-                            modifier = Modifier.testTag("nav_home")
+                            modifier = Modifier.testTag("nav_download")
                         )
-                        NavigationBarItem(
-                            selected = activeTab == "search",
-                            onClick = { activeTab = "search" },
-                            icon = { Icon(if (activeTab == "search") Icons.Filled.Search else Icons.Outlined.Search, contentDescription = "Search") },
-                            label = { Text("Search", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CinematicRed,
-                                selectedTextColor = CinematicRed,
-                                indicatorColor = ObsidianCard,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_search")
-                        )
-                        NavigationBarItem(
-                            selected = activeTab == "watchlist",
-                            onClick = { activeTab = "watchlist" },
-                            icon = { Icon(if (activeTab == "watchlist") Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, contentDescription = "Watchlist") },
-                            label = { Text("Watchlist", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CinematicRed,
-                                selectedTextColor = CinematicRed,
-                                indicatorColor = ObsidianCard,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_watchlist")
-                        )
-                        NavigationBarItem(
-                            selected = activeTab == "history",
-                            onClick = { activeTab = "history" },
-                            icon = { Icon(if (activeTab == "history") Icons.Filled.History else Icons.Outlined.History, contentDescription = "History") },
-                            label = { Text("History", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CinematicRed,
-                                selectedTextColor = CinematicRed,
-                                indicatorColor = ObsidianCard,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_history")
-                        )
-                        NavigationBarItem(
-                            selected = activeTab == "account",
-                            onClick = { activeTab = "account" },
-                            icon = { Icon(if (activeTab == "account") Icons.Filled.Person else Icons.Outlined.Person, contentDescription = "Account") },
-                            label = { Text("Account", fontSize = 11.sp) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CinematicRed,
-                                selectedTextColor = CinematicRed,
-                                indicatorColor = ObsidianCard,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            ),
-                            modifier = Modifier.testTag("nav_account")
-                        )
+
+                        if (!isForceUpdateActive) {
+                            NavigationBarItem(
+                                selected = activeTab == "settings",
+                                onClick = { activeTab = "settings" },
+                                icon = { Icon(if (activeTab == "settings") Icons.Filled.Settings else Icons.Outlined.Settings, contentDescription = "Settings") },
+                                label = { Text("Settings", fontSize = 11.sp) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = CinematicRed,
+                                    selectedTextColor = CinematicRed,
+                                    indicatorColor = ObsidianCard,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                ),
+                                modifier = Modifier.testTag("nav_settings")
+                            )
+                        }
                     }
                 }
             }
@@ -330,8 +844,17 @@ fun MainContent(viewModel: MovieViewModel) {
                     "home" -> HomeScreen(viewModel)
                     "search" -> SearchScreen(viewModel)
                     "watchlist" -> WatchlistScreen(viewModel)
+                    "download" -> DownloadScreen(viewModel)
+                    "settings" -> SettingsScreen(
+                        viewModel, 
+                        onNavigateToHistory = { activeTab = "history" },
+                        onNavigateToManageCategories = { activeTab = "manage_categories" }
+                    )
+                    "manage_categories" -> ManageCategoriesScreen(
+                        viewModel,
+                        onBack = { activeTab = "settings" }
+                    )
                     "history" -> HistoryScreen(viewModel)
-                    "account" -> AccountScreen(viewModel)
                 }
             }
         }
@@ -386,6 +909,55 @@ fun MainContent(viewModel: MovieViewModel) {
                     }
                 }
             }
+        }
+
+        // In-App Smart/Force Update Screen
+        val updateInfo = viewModel.availableUpdateInfo
+        if (updateInfo != null && viewModel.playInfo == null) {
+            if (updateInfo.isForceUpdate) {
+                if (activeTab != "download") {
+                    ForceUpdateFullScreen(
+                        updateInfo = updateInfo,
+                        isDownloading = viewModel.isDownloadingUpdate,
+                        progress = viewModel.updateDownloadProgress,
+                        statusText = viewModel.updateStatusMessage,
+                        onUpdateClick = {
+                            viewModel.downloadAndInstallUpdate(context, updateInfo.downloadUrl)
+                        },
+                        onGoToDownloads = {
+                            activeTab = "download"
+                        }
+                    )
+                }
+            } else {
+                AppUpdateDialog(
+                    updateInfo = updateInfo,
+                    isDownloading = viewModel.isDownloadingUpdate,
+                    progress = viewModel.updateDownloadProgress,
+                    statusText = viewModel.updateStatusMessage,
+                    onUpdateClick = {
+                        viewModel.downloadAndInstallUpdate(context, updateInfo.downloadUrl)
+                    },
+                    onDismiss = {
+                        android.preference.PreferenceManager.getDefaultSharedPreferences(context)
+                            .edit()
+                            .putLong("last_update_dismissed_timestamp", System.currentTimeMillis())
+                            .apply()
+                        viewModel.availableUpdateInfo = null
+                    }
+                )
+            }
+        }
+
+        // Telegram Channel Welcome Popup on App Open (168-hour cooldown)
+        if (showTelegramDialog && viewModel.playInfo == null && updateInfo == null) {
+            TelegramJoinDialog(
+                onDismiss = {
+                    prefs.edit().putLong("last_telegram_prompt_timestamp", System.currentTimeMillis()).apply()
+                    showTelegramDialog = false
+                },
+                telegramUrl = "https://t.me/Gengaworldofficial"
+            )
         }
     }
 }
@@ -585,9 +1157,9 @@ fun HomeScreen(viewModel: MovieViewModel) {
             .background(ObsidianDark)
     ) {
         // Hero Slider/Banner Section (Auto-cycling Carousel)
-        if (trending.isNotEmpty()) {
+        if (categoryMovies.isNotEmpty()) {
             item {
-                val bannerMovies = trending.take(5)
+                val bannerMovies = categoryMovies.take(5)
                 val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { bannerMovies.size })
                 
                 LaunchedEffect(pagerState, bannerMovies) {
@@ -614,9 +1186,14 @@ fun HomeScreen(viewModel: MovieViewModel) {
                                 .clickable { viewModel.selectSubject(heroMovie) }
                         ) {
                             AsyncImage(
-                                model = heroMovie.poster,
+                                model = coil.request.ImageRequest.Builder(LocalContext.current)
+                                    .data(heroMovie.poster)
+                                    .crossfade(150)
+                                    .build(),
                                 contentDescription = heroMovie.name,
                                 contentScale = ContentScale.Crop,
+                                placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
+                                error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                                 modifier = Modifier.fillMaxSize()
                             )
                             // Gradient shading
@@ -692,7 +1269,7 @@ fun HomeScreen(viewModel: MovieViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(trending) { movie ->
-                        MovieGridItem(movie) {
+                        MovieGridItem(movie, showRating = true) {
                             viewModel.selectSubject(movie)
                         }
                     }
@@ -703,17 +1280,18 @@ fun HomeScreen(viewModel: MovieViewModel) {
         // Horizontal Category filter chips (without "Explore Categories" label)
         item {
             Column(modifier = Modifier.padding(top = 16.dp)) {
-                val categories = listOf(
-                    2 to "Movies",
-                    5 to "TV/Series",
-                    8 to "Anime",
-                    18 to "Asian/Regional"
-                )
+                val categories by viewModel.activeCategories.collectAsState()
+
+                LaunchedEffect(categories) {
+                    if (categories.isNotEmpty() && categories.none { it.first == viewModel.selectedCategoryTab }) {
+                        viewModel.loadCategoryList(categories.first().first)
+                    }
+                }
 
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(bottom = 16.dp)
+                    horizontalArrangement = if (categories.size <= 4) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
                 ) {
                     items(categories) { cat ->
                         FilterChip(
@@ -766,7 +1344,7 @@ fun HomeScreen(viewModel: MovieViewModel) {
 }
 
 @Composable
-fun MovieGridItem(movie: MovieSubject, onClick: () -> Unit) {
+fun MovieGridItem(movie: MovieSubject, showRating: Boolean = false, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .width(110.dp)
@@ -779,23 +1357,30 @@ fun MovieGridItem(movie: MovieSubject, onClick: () -> Unit) {
                 .clip(RoundedCornerShape(8.dp))
         ) {
             AsyncImage(
-                model = movie.poster,
+                model = coil.request.ImageRequest.Builder(LocalContext.current)
+                    .data(movie.poster)
+                    .crossfade(150)
+                    .build(),
                 contentDescription = movie.name,
                 contentScale = ContentScale.Crop,
+                placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
+                error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                 modifier = Modifier.fillMaxSize()
             )
             // Rating Tag
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Star, contentDescription = "Rating", tint = AccentAmber, modifier = Modifier.size(10.dp))
-                    Spacer(modifier = Modifier.width(2.dp))
-                    Text(movie.rating, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            if (showRating) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Star, contentDescription = "Rating", tint = AccentAmber, modifier = Modifier.size(10.dp))
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(movie.rating, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
                 }
             }
         }
@@ -823,7 +1408,7 @@ fun SearchScreen(viewModel: MovieViewModel) {
     var searchInput by remember { mutableStateOf(viewModel.searchQuery) }
     var isSearchSubmitted by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(viewModel.customCountryIso) {
         viewModel.loadSearchSuggestions()
     }
 
@@ -973,7 +1558,7 @@ fun SearchScreen(viewModel: MovieViewModel) {
                         AsyncImage(
                             model = movie.poster,
                             contentDescription = movie.name,
-                            contentScale = ContentScale.Crop,
+                            contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                             modifier = Modifier
                                 .size(width = 60.dp, height = 90.dp)
                                 .clip(RoundedCornerShape(6.dp))
@@ -1049,7 +1634,7 @@ fun WatchlistScreen(viewModel: MovieViewModel) {
                         AsyncImage(
                             model = movie.poster,
                             contentDescription = movie.name,
-                            contentScale = ContentScale.Crop,
+                            contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                             modifier = Modifier
                                 .size(width = 50.dp, height = 75.dp)
                                 .clip(RoundedCornerShape(6.dp))
@@ -1135,7 +1720,7 @@ fun HistoryScreen(viewModel: MovieViewModel) {
                             AsyncImage(
                                 model = item.poster,
                                 contentDescription = item.name,
-                                contentScale = ContentScale.Crop,
+                                contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                                 modifier = Modifier
                                     .size(width = 60.dp, height = 90.dp)
                                     .clip(RoundedCornerShape(6.dp))
@@ -1409,7 +1994,7 @@ fun DetailScreen(viewModel: MovieViewModel) {
                     AsyncImage(
                         model = subject.poster,
                         contentDescription = subject.name,
-                        contentScale = ContentScale.Crop,
+                        contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                         modifier = Modifier.fillMaxSize()
                     )
                     // Backdrop gradient
@@ -1539,7 +2124,7 @@ fun DetailScreen(viewModel: MovieViewModel) {
                                             coil.compose.AsyncImage(
                                                 model = actor.avatar,
                                                 contentDescription = actor.name,
-                                                contentScale = ContentScale.Crop,
+                                                contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
@@ -1575,6 +2160,28 @@ fun DetailScreen(viewModel: MovieViewModel) {
                                         textAlign = TextAlign.Center,
                                         modifier = Modifier.fillMaxWidth()
                                     )
+                                }
+                            }
+                        }
+                    }
+
+                    // More Like This Section
+                    if (viewModel.detailRecommendations.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "More Like This",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        ) {
+                            items(viewModel.detailRecommendations) { movie ->
+                                MovieGridItem(movie) {
+                                    viewModel.selectSubject(movie)
                                 }
                             }
                         }
@@ -1645,7 +2252,7 @@ fun DetailScreen(viewModel: MovieViewModel) {
                         AsyncImage(
                             model = ep.stillPath.ifEmpty { subject.poster },
                             contentDescription = ep.title,
-                            contentScale = ContentScale.Crop,
+                            contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
                             modifier = Modifier
                                 .size(width = 80.dp, height = 50.dp)
                                 .clip(RoundedCornerShape(4.dp))
@@ -1687,7 +2294,8 @@ fun PlayerScreen(viewModel: MovieViewModel) {
     val context = LocalContext.current
 
     val selectedStream = viewModel.selectedStream
-    val streamUrl = selectedStream?.url ?: ""
+    val rawUrl = selectedStream?.url ?: ""
+    val streamUrl = if (rawUrl == "https://macdn.aoneroom.com/other/2026/09/04/b164fbfb4347792950bdfbfb563d39d9.mp4") "" else rawUrl
     val selectedCookie = selectedStream?.cookie ?: ""
     val subtitleUrl = viewModel.selectedSubtitle?.url
 
@@ -1723,8 +2331,37 @@ fun PlayerScreen(viewModel: MovieViewModel) {
             }
         }
         
+        // Dynamic Hardware-Based Buffering (Vega-Style)
+        val activityManager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        
+        val totalRamBytes = memoryInfo.totalMem
+        val heapLimitBytes = activityManager.memoryClass * 1024L * 1024L
+        
+        val safeBufferBytes = minOf(
+            (heapLimitBytes * 0.35).toLong(),
+            (totalRamBytes / 32)
+        ).toInt()
+        val targetBufferBytes = safeBufferBytes.coerceAtLeast(32 * 1024 * 1024) // Fallback to 32MB min
+        
+        val allocator = androidx.media3.exoplayer.upstream.DefaultAllocator(true, androidx.media3.common.C.DEFAULT_BUFFER_SEGMENT_SIZE)
+        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setAllocator(allocator)
+            .setBufferDurationsMs(
+                60000,   // minBufferMs (60 seconds minimum buffer before network idles)
+                300000,  // maxBufferMs (5 minutes of forward buffer)
+                5000,    // bufferForPlaybackMs (Wait for 5 seconds of video before starting)
+                10000    // bufferForPlaybackAfterRebufferMs (Wait for 10s if it stutters)
+            )
+            .setTargetBufferBytes(targetBufferBytes) // Dynamically calculated safe limit
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBackBuffer(30000, true) // Keep 30 seconds of previous video in RAM
+            .build()
+
         ExoPlayer.Builder(context)
             .setRenderersFactory(renderersFactory)
+            .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, true)
             .build().apply {
                 playWhenReady = viewModel.isPlaying
@@ -1869,10 +2506,17 @@ fun PlayerScreen(viewModel: MovieViewModel) {
             else -> Pair(Integer.MAX_VALUE, Integer.MAX_VALUE)
         }
         try {
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                .buildUpon()
-                .setMaxVideoSize(maxWidth, maxHeight)
-                .build()
+            val builder = exoPlayer.trackSelectionParameters.buildUpon()
+            if (q == "Auto") {
+                builder.clearVideoSizeConstraints()
+                builder.setForceHighestSupportedBitrate(false)
+            } else {
+                builder.setMaxVideoSize(maxWidth, maxHeight)
+                // Force ExoPlayer to pick the highest possible quality within this cap immediately
+                // instead of waiting for adaptive bandwidth estimation to trigger a switch
+                builder.setForceHighestSupportedBitrate(true)
+            }
+            exoPlayer.trackSelectionParameters = builder.build()
         } catch (e: Exception) {
             // Log fallback or safety
         }
@@ -1931,6 +2575,7 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                 AndroidView(
                     factory = { ctx ->
                         val view = android.view.LayoutInflater.from(ctx).inflate(com.example.R.layout.texture_player_view, null) as androidx.media3.ui.PlayerView
+                        view.keepScreenOn = true
                         view.isHapticFeedbackEnabled = false
                         view.isSoundEffectsEnabled = false
                         view.layoutParams = android.view.ViewGroup.LayoutParams(
@@ -1983,7 +2628,6 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.45f))
                             .clickable(
                                 indication = null,
                                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
@@ -2020,15 +2664,32 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                                 )
                             }
                             
-                            // Top Right Icons: Settings Gear
-                            IconButton(onClick = {
-                                activeSheet = "player_settings"
-                            }) {
-                                Icon(
-                                    Icons.Filled.Settings,
-                                    contentDescription = "Player Settings",
-                                    tint = Color.White
-                                )
+                            // Top Right Icons: Download and Settings Gear
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    val safeTitle = if (subject.isTvShow) {
+                                        "${subject.name} S${viewModel.selectedSeason}E${viewModel.currentEpisode?.episodeNumber}"
+                                    } else {
+                                        subject.name
+                                    }
+                                    downloadVideo(context, streamUrl, safeTitle, subject.poster)
+                                }) {
+                                    Icon(
+                                        Icons.Filled.Download,
+                                        contentDescription = "Download Video",
+                                        tint = Color.White
+                                    )
+                                }
+                                
+                                IconButton(onClick = {
+                                    activeSheet = "player_settings"
+                                }) {
+                                    Icon(
+                                        Icons.Filled.Settings,
+                                        contentDescription = "Player Settings",
+                                        tint = Color.White
+                                    )
+                                }
                             }
                         }
 
@@ -2168,30 +2829,11 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                     )
                 }
             } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(24.dp)
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        Icons.Filled.VideoSettings,
-                        contentDescription = "No Stream",
-                        tint = Color.Gray,
-                        modifier = Modifier.size(64.dp)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "No Live Stream Available",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
-                    Text(
-                        text = "This content has no streams for the selected language dub. Please try another language/audio.",
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                    )
+                    CircularProgressIndicator(color = CinematicRed)
                 }
             }
         }
@@ -2251,6 +2893,35 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
+                                    // 0. Cast to TV
+                                    var castButton by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<androidx.mediarouter.app.MediaRouteButton?>(null) }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { castButton?.performClick() }
+                                            .padding(vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Filled.Tv, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                            Spacer(modifier = Modifier.width(16.dp))
+                                            Text("Cast to TV", color = Color.White, fontSize = 14.sp)
+                                            AndroidView(
+                                                factory = { ctx ->
+                                                    val themeCtx = android.view.ContextThemeWrapper(ctx, androidx.appcompat.R.style.Theme_AppCompat)
+                                                    androidx.mediarouter.app.MediaRouteButton(themeCtx).apply {
+                                                        com.google.android.gms.cast.framework.CastButtonFactory.setUpMediaRouteButton(themeCtx, this)
+                                                        castButton = this
+                                                        alpha = 0f
+                                                    }
+                                                },
+                                                modifier = Modifier.size(1.dp)
+                                            )
+                                        }
+                                        Text("Not connected", color = CinematicRed, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                    }
+
                                     // 1. Audio Dub Language
                                     val currentDub = viewModel.selectedResource?.name ?: "Original"
                                     Row(
@@ -2412,7 +3083,7 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                                                                     "2.0x" -> 2.0f
                                                                     else -> 1.0f
                                                                 }
-                                                                exoPlayer.playbackParameters = androidx.media3.common.PlaybackParameters(speedVal)
+                                                                selectedSpeed = speedVal
                                                             }
                                                             "episodes" -> {
                                                                 viewModel.selectEpisode(item as com.example.data.model.Episode)
@@ -2605,6 +3276,35 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                // 0. Cast to TV
+                                var castButton2 by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<androidx.mediarouter.app.MediaRouteButton?>(null) }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { castButton2?.performClick() }
+                                        .padding(vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Tv, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(16.dp))
+                                        Text("Cast to TV", color = Color.White, fontSize = 14.sp)
+                                        AndroidView(
+                                            factory = { ctx ->
+                                                val themeCtx = android.view.ContextThemeWrapper(ctx, androidx.appcompat.R.style.Theme_AppCompat)
+                                                androidx.mediarouter.app.MediaRouteButton(themeCtx).apply {
+                                                    com.google.android.gms.cast.framework.CastButtonFactory.setUpMediaRouteButton(themeCtx, this)
+                                                    castButton2 = this
+                                                    alpha = 0f
+                                                }
+                                            },
+                                            modifier = Modifier.size(1.dp)
+                                        )
+                                    }
+                                    Text("Not connected", color = CinematicRed, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                }
+
                                 // 1. Audio Dub Language
                                 val currentDub = viewModel.selectedResource?.name ?: "Original"
                                 Row(
@@ -2768,7 +3468,7 @@ fun PlayerScreen(viewModel: MovieViewModel) {
                                                             "2.0x" -> 2.0f
                                                             else -> 1.0f
                                                         }
-                                                        exoPlayer.playbackParameters = androidx.media3.common.PlaybackParameters(speedVal)
+                                                        selectedSpeed = speedVal
                                                     }
                                                     "episodes" -> {
                                                         viewModel.selectEpisode(item as com.example.data.model.Episode)
@@ -2823,21 +3523,138 @@ fun formatTime(milliseconds: Long): String {
     return String.format("%02d:%02d", minutes, seconds)
 }
 
+data class VideoPlayerOption(
+    val name: String,
+    val packageName: String,
+    val activityName: String?,
+    val icon: android.graphics.drawable.Drawable?
+)
+
+fun getInstalledVideoPlayers(context: android.content.Context): List<VideoPlayerOption> {
+    val pm = context.packageManager
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+        setDataAndType(android.net.Uri.parse("content://dummy/video.mp4"), "video/*")
+    }
+    val resolveInfos = try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(intent, android.content.pm.PackageManager.ResolveInfoFlags.of(android.content.pm.PackageManager.MATCH_DEFAULT_ONLY.toLong()))
+        } else {
+            pm.queryIntentActivities(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+    
+    return resolveInfos
+        .filter { it.activityInfo != null && it.activityInfo.packageName != context.packageName }
+        .distinctBy { it.activityInfo.packageName }
+        .map {
+            VideoPlayerOption(
+                name = it.loadLabel(pm)?.toString() ?: it.activityInfo.packageName,
+                packageName = it.activityInfo.packageName,
+                activityName = it.activityInfo.name,
+                icon = try { it.loadIcon(pm) } catch (e: Exception) { null }
+            )
+        }
+}
+
+fun openInExternalPlayer(context: android.content.Context, file: java.io.File, option: VideoPlayerOption?) {
+    try {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            file
+        )
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "video/*")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (option != null && option.activityName != null) {
+                setClassName(option.packageName, option.activityName)
+            }
+        }
+        if (option != null) {
+            context.startActivity(intent)
+        } else {
+            val chooser = android.content.Intent.createChooser(intent, "Play with...")
+            context.startActivity(chooser)
+        }
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(context, "Unable to play: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AccountScreen(viewModel: MovieViewModel) {
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var otp by remember { mutableStateOf("") }
-    var isRegisterMode by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("") }
+fun DownloadScreen(viewModel: MovieViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var hasPermission by remember { 
+        mutableStateOf(
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R || 
+            androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) 
+    }
 
-    val context = LocalContext.current
+    val downloadedFiles = viewModel.downloadedFiles
+    val activeDownloads = viewModel.activeDownloads
+    val isScanLoaded = viewModel.isDownloadScanLoaded
+    var expandedShows by remember { mutableStateOf(setOf<String>()) }
+    var playingFile by remember { mutableStateOf<java.io.File?>(null) }
+    var playerPickerFile by remember { mutableStateOf<java.io.File?>(null) }
 
-    LaunchedEffect(viewModel.isLoggedIn) {
-        if (viewModel.isLoggedIn) {
-            viewModel.checkUserSession()
+    LaunchedEffect(hasPermission) {
+        if (!hasPermission) {
+            val activity = context as? android.app.Activity
+            if (activity != null && android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+                androidx.core.app.ActivityCompat.requestPermissions(activity, arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 101)
+            }
+        }
+        
+        // Background polling loop on Dispatchers.IO - keeps UI 100% fluid with zero lag
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val manager = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as? android.app.DownloadManager
+            while (isActive) {
+                val currentActive = mutableListOf<ActiveDownload>()
+                if (manager != null) {
+                    try {
+                        val query = android.app.DownloadManager.Query().setFilterByStatus(
+                            android.app.DownloadManager.STATUS_RUNNING or 
+                            android.app.DownloadManager.STATUS_PENDING or 
+                            android.app.DownloadManager.STATUS_PAUSED
+                        )
+                        manager.query(query)?.use { cursor ->
+                            val idIdx = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_ID)
+                            val titleIdx = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_TITLE)
+                            val soFarIdx = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                            val totalIdx = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                            while (cursor.moveToNext()) {
+                                val id = if (idIdx >= 0) cursor.getLong(idIdx) else 0L
+                                val title = if (titleIdx >= 0) cursor.getString(titleIdx) ?: "Downloading..." else "Downloading..."
+                                val bytesDownloaded = if (soFarIdx >= 0) cursor.getLong(soFarIdx) else 0L
+                                val bytesTotal = if (totalIdx >= 0) cursor.getLong(totalIdx) else 0L
+                                val progress = if (bytesTotal > 0) ((bytesDownloaded * 100) / bytesTotal).toInt() else 0
+                                currentActive.add(ActiveDownload(id, title, progress, bytesDownloaded, bytesTotal))
+                            }
+                        }
+                    } catch (e: Exception) { }
+                }
+
+                val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES), "Genga World")
+                val scanned = if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.filter { it.extension.equals("mp4", ignoreCase = true) }?.sortedBy { it.name } ?: emptyList()
+                } else {
+                    emptyList()
+                }
+
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    viewModel.activeDownloads = currentActive
+                    if (viewModel.downloadedFiles.size != scanned.size || viewModel.downloadedFiles.map { it.name } != scanned.map { it.name }) {
+                        viewModel.downloadedFiles = scanned
+                    }
+                    viewModel.isDownloadScanLoaded = true
+                }
+                kotlinx.coroutines.delay(1000)
+            }
         }
     }
 
@@ -2845,9 +3662,560 @@ fun AccountScreen(viewModel: MovieViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(ObsidianDark)
-            .padding(16.dp)
     ) {
+        if (!isScanLoaded && downloadedFiles.isEmpty() && activeDownloads.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = CinematicRed, modifier = Modifier.size(36.dp))
+            }
+        } else if (downloadedFiles.isEmpty() && activeDownloads.isEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = "Downloads",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = if (hasPermission) "No Downloads Yet" else "Storage Permission Required",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Downloaded media will appear here.",
+                    color = TextSecondary,
+                    fontSize = 14.sp
+                )
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = "My Downloads",
+                    color = TextPrimary,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(16.dp)
+                )
+                androidx.compose.foundation.lazy.LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (activeDownloads.isNotEmpty()) {
+                        item {
+                            Text("Downloading...", color = CinematicRed, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
+                        }
+                        items(activeDownloads) { active ->
+                            val gengaDir = remember { java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES), "Genga World") }
+                            val safeActiveTitle = remember(active.title) { active.title.replace(Regex("[^a-zA-Z0-9.-]"), "_") }
+                            val safeShowPrefix = remember(active.title) {
+                                val match = Regex("(.*?)(_S\\d+E\\d+.*|$)").find(safeActiveTitle)
+                                match?.groupValues?.get(1)?.trim() ?: safeActiveTitle
+                            }
+                            val activePosterFile = remember(active.title) {
+                                val titleFile = java.io.File(gengaDir, "$safeActiveTitle.jpg")
+                                if (titleFile.exists()) titleFile else {
+                                    val showFile = java.io.File(gengaDir, "$safeShowPrefix.jpg")
+                                    if (showFile.exists()) showFile else null
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(com.example.ui.theme.ObsidianCard, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (activePosterFile != null && activePosterFile.exists()) {
+                                    AsyncImage(
+                                        model = coil.request.ImageRequest.Builder(LocalContext.current)
+                                            .data(activePosterFile)
+                                            .crossfade(100)
+                                            .memoryCacheKey(activePosterFile.absolutePath)
+                                            .build(),
+                                        contentDescription = "Poster",
+                                        modifier = Modifier.size(56.dp, 42.dp).clip(RoundedCornerShape(6.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(56.dp, 42.dp)
+                                            .background(ObsidianDark, RoundedCornerShape(6.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Filled.Download, contentDescription = "Downloading", tint = CinematicRed, modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = active.title,
+                                        color = TextPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    LinearProgressIndicator(
+                                        progress = { if (active.progress > 0) active.progress / 100f else 0f },
+                                        modifier = Modifier.fillMaxWidth().height(4.dp),
+                                        color = CinematicRed,
+                                        trackColor = ObsidianDark
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "${active.progress}% (${(active.downloadedBytes / (1024 * 1024))}MB / ${if (active.totalBytes > 0) (active.totalBytes / (1024 * 1024)).toString() + "MB" else "Unknown"})",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (downloadedFiles.isNotEmpty()) {
+                        item {
+                            Text("Completed", color = TextSecondary, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp, bottom = 6.dp))
+                        }
+                        val groupedFiles = downloadedFiles.groupBy { file ->
+                            val name = file.nameWithoutExtension
+                            val match = Regex("(.*?)(_S\\d+E\\d+.*|$)").find(name)
+                            match?.groupValues?.get(1)?.replace("_", " ")?.trim() ?: name
+                        }
+
+                        items(groupedFiles.keys.toList()) { showName ->
+                            val filesForShow = groupedFiles[showName] ?: emptyList()
+                            val isExpanded = expandedShows.contains(showName)
+                            val gengaDir = remember { java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES), "Genga World") }
+                            val safeShowPrefix = remember(showName) { showName.replace(Regex("[^a-zA-Z0-9.-]"), "_") }
+
+                            val posterFile = remember(showName, filesForShow) {
+                                val showLevel = java.io.File(gengaDir, "$safeShowPrefix.jpg")
+                                if (showLevel.exists()) {
+                                    showLevel
+                                } else {
+                                    filesForShow.firstNotNullOfOrNull { f ->
+                                        val p = java.io.File(gengaDir, "${f.nameWithoutExtension}.jpg")
+                                        if (p.exists()) p else null
+                                    }
+                                }
+                            }
+                            
+                            Column(modifier = Modifier.fillMaxWidth().background(com.example.ui.theme.ObsidianCard, RoundedCornerShape(10.dp))) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            if (filesForShow.size == 1) {
+                                                playerPickerFile = filesForShow.first()
+                                            } else {
+                                                expandedShows = if (isExpanded) expandedShows - showName else expandedShows + showName
+                                            }
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (posterFile != null && posterFile.exists()) {
+                                        AsyncImage(
+                                            model = coil.request.ImageRequest.Builder(LocalContext.current)
+                                                .data(posterFile)
+                                                .crossfade(100)
+                                                .memoryCacheKey(posterFile.absolutePath)
+                                                .build(),
+                                            contentDescription = "Poster",
+                                            modifier = Modifier.size(56.dp, 84.dp).clip(RoundedCornerShape(6.dp)),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier.size(56.dp, 84.dp).background(ObsidianDark, RoundedCornerShape(6.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = CinematicRed, modifier = Modifier.size(24.dp))
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = showName,
+                                            color = TextPrimary,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = if (filesForShow.size > 1) "${filesForShow.size} Episodes" else "${(filesForShow.first().length() / (1024 * 1024))} MB",
+                                            color = TextSecondary,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                    if (filesForShow.size > 1) {
+                                        Icon(
+                                            imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                            contentDescription = "Expand",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.padding(4.dp)
+                                        )
+                                    } else if (filesForShow.isNotEmpty()) {
+                                        val singleFile = filesForShow.first()
+                                        IconButton(onClick = {
+                                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                                val singlePoster = java.io.File(gengaDir, "${singleFile.nameWithoutExtension}.jpg")
+                                                if (singlePoster.exists()) singlePoster.delete()
+                                                val showPoster = java.io.File(gengaDir, "$safeShowPrefix.jpg")
+                                                if (showPoster.exists()) showPoster.delete()
+                                                gengaDir.listFiles()?.filter { it.extension.equals("jpg", ignoreCase = true) && it.nameWithoutExtension.startsWith(safeShowPrefix) }?.forEach { it.delete() }
+                                                singleFile.delete()
+                                                viewModel.scanDownloadedFiles()
+                                            }
+                                        }) {
+                                            Icon(
+                                                Icons.Filled.Delete,
+                                                contentDescription = "Delete",
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                
+                                if (isExpanded && filesForShow.size > 1) {
+                                    Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp)) {
+                                        filesForShow.forEach { file ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 3.dp)
+                                                    .background(ObsidianDark, RoundedCornerShape(6.dp))
+                                                    .clickable { playerPickerFile = file }
+                                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = CinematicRed, modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    val epMatch = Regex("_S(\\d+)E(\\d+)").find(file.nameWithoutExtension)
+                                                    val epName = if (epMatch != null) "Season ${epMatch.groupValues[1]} Episode ${epMatch.groupValues[2]}" else file.nameWithoutExtension
+                                                    Text(text = epName, color = TextPrimary, fontSize = 13.sp)
+                                                    Text(text = "${(file.length() / (1024 * 1024))} MB", color = TextSecondary, fontSize = 11.sp)
+                                                }
+                                                IconButton(onClick = { 
+                                                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                                        if (filesForShow.size <= 1) {
+                                                            // Last episode remaining: clean up posters
+                                                            val epPoster = java.io.File(gengaDir, "${file.nameWithoutExtension}.jpg")
+                                                            if (epPoster.exists()) epPoster.delete()
+                                                            val showPoster = java.io.File(gengaDir, "$safeShowPrefix.jpg")
+                                                            if (showPoster.exists()) showPoster.delete()
+                                                            gengaDir.listFiles()?.filter { it.extension.equals("jpg", ignoreCase = true) && it.nameWithoutExtension.startsWith(safeShowPrefix) }?.forEach { it.delete() }
+                                                        }
+                                                        // When multiple episodes exist, ONLY delete the video file, preserving posters for the remaining episodes
+                                                        file.delete()
+                                                        viewModel.scanDownloadedFiles()
+                                                    }
+                                                }) {
+                                                    Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (playerPickerFile != null) {
+            val fileToPlay = playerPickerFile!!
+            val externalPlayers = remember(context) { getInstalledVideoPlayers(context) }
+            val appIcon = remember(context) {
+                try { context.packageManager.getApplicationIcon(context.packageName) } catch (e: Exception) { null }
+            }
+
+            ModalBottomSheet(
+                onDismissRequest = { playerPickerFile = null },
+                containerColor = com.example.ui.theme.ObsidianCard,
+                contentColor = TextPrimary,
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                dragHandle = {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 12.dp, bottom = 8.dp)
+                            .size(width = 40.dp, height = 4.dp)
+                            .background(TextSecondary.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+                    )
+                }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 32.dp)
+                ) {
+                    Text(
+                        text = "Play With",
+                        color = TextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    val epMatch = Regex("_S(\\d+)E(\\d+)").find(fileToPlay.nameWithoutExtension)
+                    val displayName = if (epMatch != null) {
+                        val showPrefix = fileToPlay.nameWithoutExtension.substringBefore("_S").replace("_", " ")
+                        "$showPrefix • Season ${epMatch.groupValues[1]} Episode ${epMatch.groupValues[2]}"
+                    } else {
+                        fileToPlay.nameWithoutExtension.replace("_", " ")
+                    }
+                    Text(
+                        text = displayName,
+                        color = TextSecondary,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                    )
+
+                    // 1. Genga World Internal Player
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(ObsidianDark)
+                            .clickable {
+                                playingFile = fileToPlay
+                                playerPickerFile = null
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (appIcon != null) {
+                            AsyncImage(
+                                model = appIcon,
+                                contentDescription = "Genga World",
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(RoundedCornerShape(10.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .background(CinematicRed.copy(alpha = 0.2f), RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = CinematicRed, modifier = Modifier.size(28.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Genga World Player",
+                                    color = TextPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "IN-APP",
+                                    color = CinematicRed,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier
+                                        .background(CinematicRed.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Text(
+                                text = "Built-in cinema player with controls",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = CinematicRed)
+                    }
+
+                    if (externalPlayers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Other Installed Players",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+
+                        externalPlayers.forEach { player ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(ObsidianDark)
+                                    .clickable {
+                                        playerPickerFile = null
+                                        openInExternalPlayer(context, fileToPlay, player)
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (player.icon != null) {
+                                    AsyncImage(
+                                        model = player.icon,
+                                        contentDescription = player.name,
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(RoundedCornerShape(10.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .background(com.example.ui.theme.ObsidianCard, RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = TextSecondary)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = player.name,
+                                        color = TextPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "External player",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+
+                    // System Chooser Option
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(ObsidianDark)
+                            .clickable {
+                                playerPickerFile = null
+                                openInExternalPlayer(context, fileToPlay, null)
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(com.example.ui.theme.ObsidianCard, RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Filled.MoreHoriz, contentDescription = "More", tint = TextPrimary)
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "System Dialog / More Apps...",
+                                color = TextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Choose from standard Android popup",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
+        
+        if (playingFile != null) {
+            val exoPlayer = remember {
+                androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(playingFile!!)))
+                    prepare()
+                    playWhenReady = true
+                }
+            }
+            DisposableEffect(playingFile) {
+                onDispose {
+                    exoPlayer.release()
+                }
+            }
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = {
+                        androidx.media3.ui.PlayerView(context).apply {
+                            player = exoPlayer
+                            useController = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                IconButton(
+                    onClick = { playingFile = null },
+                    modifier = Modifier.align(Alignment.TopStart).padding(top = 32.dp, start = 16.dp)
+                ) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "Close", tint = Color.White)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(viewModel: MovieViewModel, onNavigateToHistory: () -> Unit = {}, onNavigateToManageCategories: () -> Unit = {}) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var otp by remember { mutableStateOf("") }
+    var isRegisterMode by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
+    var statusMessage by remember { mutableStateOf("") }
+    var showLoginForm by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val history by viewModel.historyList.collectAsState()
+    
+    val groupedHistory = remember(history) {
+        history.groupBy { it.subjectId }.map { it.value.first() }
+    }
+
+    LaunchedEffect(viewModel.isLoggedIn) {
         if (viewModel.isLoggedIn) {
+            viewModel.checkUserSession()
+            showLoginForm = false
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ObsidianDark)
+            .padding(horizontal = 16.dp, vertical = 24.dp)
+    ) {
+        if (viewModel.isLoggedIn || !showLoginForm) {
             val user = viewModel.currentUserProfile
             var showEditNicknameDialog by remember { mutableStateOf(false) }
             var editNickname by remember { mutableStateOf(user?.nickname ?: "") }
@@ -2877,7 +4245,7 @@ fun AccountScreen(viewModel: MovieViewModel) {
                 }
             }
 
-            if (showEditNicknameDialog) {
+            if (showEditNicknameDialog && viewModel.isLoggedIn) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showEditNicknameDialog = false },
                     title = { Text("Edit Nickname", color = TextPrimary) },
@@ -2923,209 +4291,491 @@ fun AccountScreen(viewModel: MovieViewModel) {
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                horizontalAlignment = Alignment.Start,
+                verticalArrangement = Arrangement.Top
             ) {
-                // User Avatar
-                Box(
-                    modifier = Modifier
-                        .size(110.dp)
-                        .background(ObsidianCard, shape = CircleShape)
-                        .clickable {
-                            photoPickerLauncher.launch("image/*")
-                        }
-                        .padding(4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (user?.avatar?.isNotEmpty() == true) {
-                        AsyncImage(
-                            model = user.avatar,
-                            contentDescription = "Avatar",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape)
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.AccountCircle,
-                            contentDescription = "User Avatar",
-                            tint = CinematicRed,
-                            modifier = Modifier.size(90.dp)
-                        )
-                    }
-                }
+                Spacer(modifier = Modifier.height(8.dp))
 
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // Profile card details
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = if (user?.nickname?.isNotEmpty() == true) user.nickname else "Official User",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            IconButton(
-                                onClick = {
-                                    editNickname = user?.nickname ?: ""
-                                    showEditNicknameDialog = true
-                                },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Edit,
-                                    contentDescription = "Edit Profile",
-                                    tint = CinematicRed,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        Text(
-                            text = if (user?.username?.isNotEmpty() == true) user.username else if (user?.email?.isNotEmpty() == true) user.email else "authenticated_session@moviebox.api",
-                            fontSize = 14.sp,
-                            color = TextSecondary,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Divider(color = Color.Gray.copy(alpha = 0.2f))
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Account Status", color = TextSecondary, fontSize = 14.sp)
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = CinematicRed.copy(alpha = 0.15f)),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = if (user?.vip == 1) "VIP Premium" else "Active Member",
-                                    color = CinematicRed,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        if (user?.userId?.isNotEmpty() == true) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("User ID", color = TextSecondary, fontSize = 14.sp)
-                                Text(user.userId, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            }
-                        }
-
-                        if (user?.vip == 1 && user.vipExpire.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("VIP Expiry", color = TextSecondary, fontSize = 14.sp)
-                                Text(user.vipExpire, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Stats Row
+                // Profile Header Row (Avatar on Left, Nickname & ID on Right)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 8.dp)
+                        .clickable {
+                            if (viewModel.isLoggedIn) {
+                                editNickname = user?.nickname ?: ""
+                                showEditNicknameDialog = true
+                            } else {
+                                showLoginForm = true
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val stats = listOf(
-                        Triple("Watched", user?.haveSeenCount ?: 0, Icons.Filled.History),
-                        Triple("Watchlist", user?.wantToSeeCount ?: 0, Icons.Filled.Bookmark)
-                    )
-
-                    stats.forEach { (label, count, icon) ->
-                        Card(
-                            modifier = Modifier.weight(1f),
-                            colors = CardDefaults.cardColors(containerColor = ObsidianCard),
-                            shape = RoundedCornerShape(12.dp)
+                    // Avatar
+                    if (viewModel.isLoggedIn) {
+                        Box(
+                            modifier = Modifier
+                                .size(70.dp)
+                                .background(ObsidianCard, shape = CircleShape)
+                                .clickable {
+                                    photoPickerLauncher.launch("image/*")
+                                }
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
+                            if (user?.avatar?.isNotEmpty() == true) {
+                                AsyncImage(
+                                    model = user.avatar,
+                                    contentDescription = "Avatar",
+                                    contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape)
+                                )
+                            } else {
                                 Icon(
-                                    imageVector = icon,
-                                    contentDescription = label,
+                                    imageVector = Icons.Filled.AccountCircle,
+                                    contentDescription = "User Avatar",
                                     tint = CinematicRed,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = count.toString(),
-                                    color = TextPrimary,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = label,
-                                    color = TextSecondary,
-                                    fontSize = 11.sp
+                                    modifier = Modifier.size(60.dp)
                                 )
                             }
+                        }
+
+                        Spacer(modifier = Modifier.width(16.dp))
+                    }
+
+                    // Nickname and ID
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (viewModel.isLoggedIn && user?.nickname?.isNotEmpty() == true) user.nickname else "Log in to your account",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        if (viewModel.isLoggedIn) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "ID: ${if (user?.userId?.isNotEmpty() == true) user.userId else "00000000"}",
+                                    fontSize = 12.sp,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (!viewModel.isLoggedIn) {
+                        Button(
+                            onClick = { showLoginForm = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = CinematicRed),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Log In", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(30.dp))
 
-                Button(
-                    onClick = {
-                        viewModel.logoutUser {
-                            Toast.makeText(context, "Logged out successfully", Toast.LENGTH_SHORT).show()
-                        }
-                    },
+                // Watch History Section
+                Card(
                     modifier = Modifier
-                        .fillMaxWidth(0.85f)
-                        .height(50.dp)
-                        .testTag("logout_button"),
-                    colors = ButtonDefaults.buttonColors(containerColor = CinematicRed),
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(imageVector = Icons.Filled.ExitToApp, contentDescription = "Log Out")
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Sign Out", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                    ) {
+                        // Title Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onNavigateToHistory() }
+                                .padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Filled.History,
+                                    contentDescription = "Watch History",
+                                    tint = TextPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Watch History",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Filled.ChevronRight,
+                                contentDescription = "Navigate",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // History Posters Row
+                        if (groupedHistory.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(groupedHistory.take(5)) { item ->
+                                    Box(
+                                        modifier = Modifier
+                                            .width(140.dp)
+                                            .height(80.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.DarkGray)
+                                            .clickable {
+                                                // Quick jump to detail could be added here
+                                                onNavigateToHistory()
+                                            }
+                                    ) {
+                                        AsyncImage(
+                                            model = item.poster,
+                                            contentDescription = item.name,
+                                            contentScale = ContentScale.Crop, placeholder = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray), error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.DarkGray),
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        // Gradient at bottom
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.verticalGradient(
+                                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)),
+                                                        startY = 50f
+                                                    )
+                                                )
+                                        )
+                                        // Title text over image
+                                        Text(
+                                            text = item.name,
+                                            color = Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Location / Region Selection Section
+                var showLocationDialog by remember { mutableStateOf(false) }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showLocationDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.LocationOn,
+                                contentDescription = "Location",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Location",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = when (viewModel.customCountryIso) {
+                                        "us" -> "United States"
+                                        "br" -> "Brazil"
+                                        "ru" -> "Russia"
+                                        else -> "India"
+                                    },
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Manage Categories Section
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigateToManageCategories() }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.List,
+                                contentDescription = "Manage Categories",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Manage Categories",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Add or remove Home Feed tabs",
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Filled.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Telegram Community Section
+                var showSettingsTelegramDialog by remember { mutableStateOf(false) }
+                if (showSettingsTelegramDialog) {
+                    TelegramJoinDialog(
+                        onDismiss = { showSettingsTelegramDialog = false },
+                        telegramUrl = "https://t.me/Gengaworldofficial"
+                    )
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showSettingsTelegramDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.Send,
+                                contentDescription = "Telegram",
+                                tint = Color(0xFF0EA2DE),
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .rotate(-25f)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Join Telegram Channel",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Get early access, requests & updates",
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Filled.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Check for Updates Section
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !viewModel.isCheckingUpdate) {
+                                viewModel.checkForUpdates(isManualCheck = true) { hasUpdate, message ->
+                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.SystemUpdate,
+                                contentDescription = "Check for Updates",
+                                tint = CinematicRed,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Check for Updates",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val appVersion = remember {
+                                    try {
+                                        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "2.0"
+                                    } catch (e: Exception) { "2.0" }
+                                }
+                                Text(
+                                    text = if (viewModel.isCheckingUpdate) "Checking latest version..." else "Current: v$appVersion",
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        if (viewModel.isCheckingUpdate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = CinematicRed,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.ChevronRight,
+                                contentDescription = "Check",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (showLocationDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showLocationDialog = false },
+                        title = { Text("Select Region", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                        text = {
+                            Column {
+                                val regions = listOf(
+                                    Triple("90101", "us", "United States"),
+                                    Triple("40401", "in", "India"),
+                                    Triple("72402", "br", "Brazil"),
+                                    Triple("25001", "ru", "Russia")
+                                )
+                                regions.forEach { reg ->
+                                    val isSelected = viewModel.customMcc == reg.first && viewModel.customCountryIso == reg.second
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { 
+                                                viewModel.applyCustomSandbox(reg.first, reg.second)
+                                                showLocationDialog = false
+                                            }
+                                            .padding(vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = { 
+                                                viewModel.applyCustomSandbox(reg.first, reg.second)
+                                                showLocationDialog = false
+                                            },
+                                            colors = RadioButtonDefaults.colors(selectedColor = CinematicRed)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(reg.third, color = TextPrimary, fontSize = 16.sp)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showLocationDialog = false }) {
+                                Text("Close", color = TextSecondary)
+                            }
+                        },
+                        containerColor = ObsidianCard
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(30.dp))
+
+                if (viewModel.isLoggedIn) {
+                    Button(
+                        onClick = {
+                            viewModel.logoutUser {
+                                Toast.makeText(context, "Logged out successfully", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth(0.85f)
+                            .align(Alignment.CenterHorizontally)
+                            .height(50.dp)
+                            .testTag("logout_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = CinematicRed),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(imageVector = Icons.Filled.ExitToApp, contentDescription = "Log Out")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sign Out", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(80.dp))
             }
         } else {
             // Sign In / Register Card Layout
@@ -3136,6 +4786,16 @@ fun AccountScreen(viewModel: MovieViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
+                // Close button to return to profile
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    IconButton(onClick = { showLoginForm = false }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = TextPrimary)
+                    }
+                }
+
                 // Brand Header
                 Icon(
                     imageVector = Icons.Filled.Lock,
@@ -3375,6 +5035,18 @@ fun AccountScreen(viewModel: MovieViewModel) {
                             fontSize = 14.sp
                         )
                     }
+                }
+
+                if (isRegisterMode) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Powered by MovieBox",
+                        color = TextSecondary.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))

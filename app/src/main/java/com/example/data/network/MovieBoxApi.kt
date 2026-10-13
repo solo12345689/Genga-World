@@ -31,6 +31,11 @@ interface MovieBoxApi {
         @Query("pageSize") pageSize: Int
     ): SearchResponse
 
+    @POST("wefeed-mobile-bff/subject-api/detail-rec")
+    suspend fun getDetailRec(
+        @Body request: Map<String, @JvmSuppressWildcards Any>
+    ): HomeListResponse
+
     @GET("wefeed-mobile-bff/subject-api/get")
     suspend fun getDetail(
         @Query("subjectId") subjectId: String,
@@ -79,8 +84,13 @@ interface MovieBoxApi {
     suspend fun modifyProfile(
         @Body request: Map<String, String>
     ): CommonResponse
+    
+    @POST("upload-avatar")
+    suspend fun uploadAvatarLocal(
+        @Body request: Map<String, String>
+    ): Map<String, Any?>
 
-    @GET("sts-token")
+    @GET("wefeed-mobile-bff/upload/sts-token/v2")
     suspend fun getStsToken(): Map<String, Any?>
 
     @GET("user-info")
@@ -173,6 +183,17 @@ class MovieBoxSignatureInterceptor(private val prefs: PreferencesManager) : Inte
                 newUrlBuilder.encodedPath("/trending")
                     .removeAllQueryParameters("page")
                     .removeAllQueryParameters("pageSize")
+            } else if (fullPath.contains("wefeed-mobile-bff/subject-api/detail-rec") || fullPath.endsWith("detail-rec")) {
+                val body = originalRequest.body
+                if (body != null) {
+                    val buffer = okio.Buffer()
+                    body.writeTo(buffer)
+                    requestBodyString = buffer.readUtf8()
+                }
+                val subjectId = Regex("\"subjectId\"\\s*:\\s*\"?(\\d+)\"?").find(requestBodyString)?.groupValues?.get(1) ?: ""
+                newUrlBuilder.encodedPath("/detail-rec")
+                    .setQueryParameter("subjectId", subjectId)
+                isPostToGet = true
             } else if (fullPath.contains("home/v2/get-list") || fullPath.endsWith("get-list")) {
                 val body = originalRequest.body
                 if (body != null) {
@@ -189,7 +210,7 @@ class MovieBoxSignatureInterceptor(private val prefs: PreferencesManager) : Inte
                     8 -> "anime"
                     18 -> "asian"
                     5 -> "western"
-                    else -> "movies"
+                    else -> "category/$categoryId"
                 }
                 
                 newUrlBuilder.encodedPath("/$endpoint")
@@ -231,7 +252,7 @@ class MovieBoxSignatureInterceptor(private val prefs: PreferencesManager) : Inte
                     val rawJson = responseBody.string()
                     val rewrittenJson = try {
                         val path = newUrl.encodedPath
-                        if (path.contains("movies") || path.contains("anime") || path.contains("asian") || path.contains("western")) {
+                        if (path.contains("movies") || path.contains("anime") || path.contains("asian") || path.contains("western") || path.contains("category/")) {
                             flattenCategoryJson(rawJson)
                         } else if (path.contains("trending")) {
                             rewriteTrendingJson(rawJson)

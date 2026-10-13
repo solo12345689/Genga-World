@@ -197,14 +197,14 @@ class MovieSubjectAdapter {
         var posterUrl = ""
         val poster = item["poster"]
         if (poster is Map<*, *>) {
-            posterUrl = poster["url"]?.toString() ?: ""
+            posterUrl = poster["thumbUrl"]?.toString() ?: poster["webpUrl"]?.toString() ?: poster["url"]?.toString() ?: ""
         } else if (poster is String) {
             posterUrl = poster
         }
         if (posterUrl.isEmpty()) {
             val cover = item["cover"]
             if (cover is Map<*, *>) {
-                posterUrl = cover["url"]?.toString() ?: ""
+                posterUrl = cover["thumbUrl"]?.toString() ?: cover["webpUrl"]?.toString() ?: cover["url"]?.toString() ?: ""
             } else if (cover is String) {
                 posterUrl = cover
             }
@@ -212,7 +212,7 @@ class MovieSubjectAdapter {
         if (posterUrl.isEmpty()) {
             val hp = item["horizontalPoster"] ?: item["horizontalCover"]
             if (hp is Map<*, *>) {
-                posterUrl = hp["url"]?.toString() ?: ""
+                posterUrl = hp["thumbUrl"]?.toString() ?: hp["webpUrl"]?.toString() ?: hp["url"]?.toString() ?: ""
             } else if (hp is String) {
                 posterUrl = hp
             }

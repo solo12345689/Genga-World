@@ -358,7 +358,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                     }
                 }
 
-                path == "/sts-token" -> {
+                path == "/wefeed-mobile-bff/upload/sts-token/v2" -> {
                     try {
                         val rawResponse = makeOfficialRequest("GET", "/wefeed-mobile-bff/upload/sts-token/v2")
                         Pair(200, rawResponse)
@@ -377,7 +377,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                             file.outputStream().use { out ->
                                 out.write(decodedBytes)
                             }
-                            Pair(200, "{\"status\": \"success\", \"url\": \"http://127.0.0.1:3000/uploads/avatar.jpg\"}")
+                            Pair(200, "{\"status\": \"success\", \"url\": \"file://${context.filesDir.absolutePath}/avatar.jpg\"}")
                         } else {
                             Pair(400, "{\"status\": \"error\", \"message\": \"Image data is empty\"}")
                         }
@@ -424,6 +424,16 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         Pair(200, rawResponse)
                     } catch (e: Exception) {
                         Pair(500, "{\"code\": 500, \"message\": \"${e.message}\"}")
+                    }
+                }
+                path == "/detail-rec" -> {
+                    try {
+                        val subjectId = qParams["subjectId"] ?: ""
+                        val bodyJson = "{\"subjectId\":\"$subjectId\",\"page\":1,\"pageSize\":10}"
+                        val rawResponse = makeOfficialRequest("POST", "/wefeed-mobile-bff/subject-api/detail-rec", emptyMap(), bodyJson)
+                        Pair(200, rawResponse)
+                    } catch (e: Exception) {
+                        Pair(500, "{\"code\":-1,\"message\":\"${e.message}\"}")
                     }
                 }
                 
@@ -507,7 +517,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                     }
                 }
                 
-                path == "/search-suggestions" -> {
+                path == "/wefeed-mobile-bff/subject-api/trending/v2" || path == "/search-suggestions" -> {
                     val q = qParams["q"] ?: ""
                     try {
                         if (q.isNotEmpty()) {
@@ -532,15 +542,32 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                             )
                             Pair(200, toJsonString(responseBody))
                         } else {
-                            val rawResponse = makeOfficialRequest("GET", "/wefeed-mobile-bff/subject-api/search-rank", mapOf("page" to "1", "pageSize" to "10"))
-                            val responseMap = parseJsonToMap(rawResponse)
-                            val dataMap = responseMap["data"] as? Map<String, Any?>
-                            val list = (dataMap?.get("list") ?: dataMap?.get("items") ?: dataMap?.get("subjects") ?: dataMap?.get("keywords")) as? List<Map<String, Any?>> 
-                                ?: responseMap["data"] as? List<Map<String, Any?>> 
+                            val trendRaw = makeOfficialRequest("POST", "/wefeed-mobile-bff/subject-api/trending/v2", emptyMap(), "{}")
+                            val trendMap = parseJsonToMap(trendRaw)
+                            val trendDataMap = trendMap["data"] as? Map<String, Any?>
+                            val trendList = (trendDataMap?.get("list") ?: trendDataMap?.get("items") ?: trendDataMap?.get("subjects")) as? List<Map<String, Any?>> 
+                                ?: trendMap["data"] as? List<Map<String, Any?>> 
                                 ?: emptyList()
-                            val suggestions = list.mapNotNull { i ->
-                                i["keyword"] ?: i["title"] ?: i["name"]
+                            var suggestions = trendList.mapNotNull { itMap ->
+                                val subj = itMap["subject"] as? Map<String, Any?> ?: itMap
+                                (subj["title"] ?: subj["name"] ?: itMap["title"] ?: itMap["name"])?.toString()
+                            }.take(10)
+                            
+                            if (suggestions.isEmpty()) {
+                                val rawRank = makeOfficialRequest("GET", "/wefeed-mobile-bff/subject-api/search-rank/v2", mapOf("page" to "1", "pageSize" to "10"))
+                                val rankMap = parseJsonToMap(rawRank)
+                                val rankData = rankMap["data"] as? Map<String, Any?>
+                                val hotArray = rankData?.get("hot") as? List<Map<String, Any?>> ?: emptyList()
+                                val firstHotObj = hotArray.firstOrNull() ?: emptyMap()
+                                val rankItems = (firstHotObj["items"] ?: firstHotObj["list"]) as? List<Map<String, Any?>> ?: emptyList()
+                                suggestions = rankItems.mapNotNull { i ->
+                                    (i["keyword"] ?: i["title"] ?: i["name"])?.toString()
+                                }.take(10)
                             }
+                            if (suggestions.isEmpty()) {
+                                suggestions = listOf("Action", "Anime", "Drama", "Comedy", "Sci-Fi")
+                            }
+                            
                             val responseBody = mapOf(
                                 "code" to 0,
                                 "data" to suggestions
@@ -549,10 +576,26 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         }
                     } catch (e: Exception) {
                         Log.w("LocalMovieBoxServer", "Search-suggestions fallback triggered: ${e.message}")
-                        val suggestions = listOf("Matrix", "Spider-Man", "Dune", "Oppenheimer", "Interstellar")
+                        var fallbackSuggestions = listOf("Action", "Anime", "Drama", "Comedy", "Sci-Fi")
+                        try {
+                            val trendRaw = makeOfficialRequest("POST", "/wefeed-mobile-bff/subject-api/trending/v2", emptyMap(), "{}")
+                            val trendMap = parseJsonToMap(trendRaw)
+                            val trendDataMap = trendMap["data"] as? Map<String, Any?>
+                            val trendList = (trendDataMap?.get("list") ?: trendDataMap?.get("items") ?: trendDataMap?.get("subjects")) as? List<Map<String, Any?>> 
+                                ?: trendMap["data"] as? List<Map<String, Any?>> 
+                                ?: emptyList()
+                            val trendTitles = trendList.mapNotNull { itMap ->
+                                val subj = itMap["subject"] as? Map<String, Any?> ?: itMap
+                                (subj["title"] ?: subj["name"] ?: itMap["title"] ?: itMap["name"])?.toString()
+                            }.take(10)
+                            if (trendTitles.isNotEmpty()) {
+                                fallbackSuggestions = trendTitles
+                            }
+                        } catch (ex: Exception) {}
+                        
                         val responseBody = mapOf(
                             "code" to 0,
-                            "data" to suggestions
+                            "data" to fallbackSuggestions
                         )
                         Pair(200, toJsonString(responseBody))
                     }
@@ -785,8 +828,96 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         val responseMap = parseJsonToMap(rawResponse)
                         val data = responseMap["data"] as? Map<String, Any?> ?: emptyMap<String, Any?>()
 
-                        val streams = data["streamList"] as? List<Map<String, Any?>> ?: data["streams"] as? List<Map<String, Any?>> ?: emptyList()
+                        var streams = data["streamList"] as? List<Map<String, Any?>> ?: data["streams"] as? List<Map<String, Any?>> ?: emptyList()
                         val globalCookie = responseMap["signCookie"] ?: data["signCookie"] ?: ""
+
+                        // UGC BYPASS
+                        var allDummy = true
+                        for (st in streams) {
+                            val u = st["url"]?.toString() ?: ""
+                            if (!u.contains("macdn.aoneroom.com") && !u.contains("please_update") && !u.contains("update_app") && !u.contains("b164fbfb43")) {
+                                allDummy = false
+                                break
+                            }
+                        }
+                        if (streams.isEmpty()) allDummy = true
+
+                        if (allDummy) {
+                            try {
+                                val ugcFirstRaw = makeOfficialRequest("GET", "/wefeed-mobile-bff/ugc/video/first-by-subject", mapOf("subjectId" to finalSubjectId))
+                                val ugcFirstMap = parseJsonToMap(ugcFirstRaw)
+                                val ugcFirstData = ugcFirstMap["data"] as? Map<String, Any?>
+                                val ugcVidId = ugcFirstData?.get("ugcVideoId")?.toString()
+                                
+                                val belongToCollection = ugcFirstData?.get("belongToCollection") as? Map<String, Any?>
+                                val collectionId = belongToCollection?.get("collectionId")?.toString()
+
+                                val ugcStreams = mutableListOf<Map<String, Any?>>()
+                                var foundTargetInCollection = false
+
+                                // Step 1: Try Collection Download (for TV/Anime)
+                                if (!collectionId.isNullOrEmpty()) {
+                                    val ugcDlRaw = makeOfficialRequest("GET", "/wefeed-mobile-bff/ugc/collection/download-list", mapOf("collectionId" to collectionId, "page" to "1", "perPage" to "50"))
+                                    val ugcDlMap = parseJsonToMap(ugcDlRaw)
+                                    val ugcDlData = ugcDlMap["data"] as? Map<String, Any?>
+                                    val ugcItems = ugcDlData?.get("items") as? List<Map<String, Any?>> ?: emptyList()
+                                    
+                                    // Look for the specific episode (e.g., S1EP13 or E13)
+                                    val targetEpStr = "S${resSe ?: 1}EP${resEp ?: 1}"
+                                    val targetEpAlt = "E${resEp ?: 1}"
+                                    
+                                    var targetItem: Map<String, Any?>? = null
+                                    for (item in ugcItems) {
+                                        val epTitle = item["epTitle"]?.toString()?.uppercase() ?: ""
+                                        val title = item["title"]?.toString()?.uppercase() ?: ""
+                                        if (epTitle.contains(targetEpStr) || epTitle.contains(targetEpAlt) || title.contains(targetEpStr) || title.contains(targetEpAlt)) {
+                                            targetItem = item
+                                            break
+                                        }
+                                    }
+                                    
+                                    // If we couldn't match by title, but we have the video for ep 1 and they requested ep 1
+                                    if (targetItem == null && resEp == "1" && ugcItems.isNotEmpty()) {
+                                        targetItem = ugcItems[0]
+                                    }
+
+                                    if (targetItem != null) {
+                                        foundTargetInCollection = true
+                                        val resources = targetItem["resources"] as? List<Map<String, Any?>> ?: emptyList()
+                                        for (res in resources) {
+                                            val rUrl = res["url"]?.toString() ?: ""
+                                            if (rUrl.isNotEmpty() && !rUrl.contains("macdn.aoneroom.com") && !rUrl.contains("b164fbfb43")) {
+                                                ugcStreams.add(res)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Step 2: Fallback to single video download (for Movies or if collection failed)
+                                if (!foundTargetInCollection && !ugcVidId.isNullOrEmpty()) {
+                                    val ugcDlRaw = makeOfficialRequest("GET", "/wefeed-mobile-bff/ugc/video/download", mapOf("ugcVideoId" to ugcVidId))
+                                    val ugcDlMap = parseJsonToMap(ugcDlRaw)
+                                    val ugcDlData = ugcDlMap["data"] as? Map<String, Any?>
+                                    val ugcItems = ugcDlData?.get("items") as? List<Map<String, Any?>> ?: emptyList()
+                                    for (item in ugcItems) {
+                                        val resources = item["resources"] as? List<Map<String, Any?>> ?: emptyList()
+                                        for (res in resources) {
+                                            val rUrl = res["url"]?.toString() ?: ""
+                                            if (rUrl.isNotEmpty() && !rUrl.contains("macdn.aoneroom.com") && !rUrl.contains("b164fbfb43")) {
+                                                ugcStreams.add(res)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (ugcStreams.isNotEmpty()) {
+                                    streams = ugcStreams
+                                    Log.i("LocalMovieBoxServer", "UGC BYPASS SUCCESS: Recovered ${ugcStreams.size} REAL streams!")
+                                }
+                            } catch (e: Exception) {
+                                Log.w("LocalMovieBoxServer", "UGC bypass failed: ${e.message}")
+                            }
+                        }
 
                         val prioritizedStreams = streams.map { it }
                         var workingUrl = ""
@@ -808,8 +939,10 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                             }
                             
                             val bestStream = sortedDescending[0]
+                            
                             var url = bestStream["url"]?.toString() ?: ""
                             val bestCookie = bestStream["signCookie"]?.toString() ?: ""
+                            var isDummy = url.contains("macdn.aoneroom.com") || url.contains("please_update") || url.contains("update_app")
                             
                             // Anti-Piracy Dummy Video Bypass
                             if (bestCookie.contains("urlprefix=")) {
@@ -825,16 +958,36 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                                     
                                     val decodedPathBytes = android.util.Base64.decode(base64Str, android.util.Base64.DEFAULT)
                                     val decodedPath = String(decodedPathBytes, StandardCharsets.UTF_8)
-                                    url = if (decodedPath.endsWith("/")) "${decodedPath}index.mpd" else "${decodedPath}/index.mpd"
+                                    url = if (decodedPath.endsWith("/")) "${decodedPath}index.m3u8" else "${decodedPath}/index.m3u8"
+                                    isDummy = false // Bypass successful, no longer a dummy!
                                     Log.i("LocalMovieBoxServer", "Dummy video bypassed. Real URL: $url")
                                 } catch (e: Exception) {
                                     Log.w("LocalMovieBoxServer", "Failed to bypass dummy video: ${e.message}")
                                 }
                             }
-                            workingUrl = url
+
+                            if (isDummy) {
+                                Log.w("LocalMovieBoxServer", "Skipping un-bypassed dummy video trap: $url")
+                                workingUrl = ""
+                            } else {
+                                workingUrl = url
+                            }
                             
                             if (bestCookie.isNotEmpty()) {
                                 workingCookie = bestCookie
+                            }
+                        }
+                        
+                        if (workingUrl.isEmpty() && prioritizedStreams.isNotEmpty()) {
+                            // Try to find any fallback stream that isn't a dummy
+                            for (st in prioritizedStreams) {
+                                val fallbackUrl = st["url"]?.toString() ?: ""
+                                val fallbackIsDummy = fallbackUrl.contains("macdn.aoneroom.com") || fallbackUrl.contains("please_update") || fallbackUrl.contains("update_app")
+                                if (!fallbackIsDummy && fallbackUrl.isNotEmpty()) {
+                                    workingUrl = fallbackUrl
+                                    workingCookie = st["signCookie"]?.toString() ?: ""
+                                    break
+                                }
                             }
                         }
 
@@ -842,11 +995,14 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         
                         // 1. Fetch external subtitles (get-ext-captions)
                         try {
-                            val subParams = mapOf(
+                            val subParams = mutableMapOf(
                                 "subjectId" to finalSubjectId,
-                                "resourceId" to subResourceId,
-                                "episode" to episode
+                                "resourceId" to subResourceId
                             )
+                            if (!isMovie) {
+                                subParams["se"] = season
+                                subParams["ep"] = episode
+                            }
                             val subResponseRaw = makeOfficialRequest("GET", "/wefeed-mobile-bff/subject-api/get-ext-captions", subParams)
                             val subResponseMap = parseJsonToMap(subResponseRaw)
                             val subData = subResponseMap["data"] as? Map<String, Any?> ?: emptyMap()
@@ -896,7 +1052,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                         Log.w("LocalMovieBoxServer", "Stream fallback triggered: ${e.message}")
                         val responseBody = mapOf(
                             "code" to 0,
-                            "url" to "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+                            "url" to "",
                             "quality" to quality,
                             "cookie" to "",
                             "subtitles" to listOf(
@@ -908,35 +1064,70 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                 }
                 
                 else -> {
-                    // Category list handlers: movies, anime, asian, western, short-tv, kids, education, music, nollywood, game
-                    val categoryId = when (path) {
-                        "/movies" -> 2
-                        "/anime" -> 8
-                        "/asian" -> 18
-                        "/western" -> 19
-                        "/short-tv" -> 13
-                        "/kids" -> 23
-                        "/education" -> 3
-                        "/music" -> 4
-                        "/nollywood" -> 28
-                        "/game" -> 11
-                        else -> null
+                    // Category list handlers
+                    var categoryId: Int? = null
+                    var page = "1"
+                    
+                    if (path == "/home/v2/get-list") {
+                        try {
+                            val requestMap = parseJsonToMap(body)
+                            categoryId = requestMap["categoryId"]?.toString()?.toDoubleOrNull()?.toInt()
+                            page = requestMap["page"]?.toString()?.toDoubleOrNull()?.toInt()?.toString() ?: "1"
+                        } catch (e: Exception) {
+                            Log.e("LocalMovieBoxServer", "Error parsing get-list body", e)
+                        }
+                    } else {
+                        categoryId = when {
+                            path == "/movies" -> 2
+                            path == "/anime" -> 8
+                            path == "/asian" -> 18
+                            path == "/western" -> 19
+                            path == "/short-tv" -> 13
+                            path == "/kids" -> 23
+                            path == "/education" -> 3
+                            path == "/music" -> 4
+                            path == "/nollywood" -> 28
+                            path == "/game" -> 11
+                            path.startsWith("/category/") -> path.removePrefix("/category/").toIntOrNull()
+                            else -> null
+                        }
+                        if (qParams.containsKey("page")) {
+                            page = qParams["page"] ?: "1"
+                        }
                     }
                     
                     if (categoryId != null) {
-                        val page = qParams["page"] ?: "1"
                         try {
-                            val rawResponse = makeOfficialRequest(
+                            var rawResponse = makeOfficialRequest(
                                 "GET",
                                 "/wefeed-mobile-bff/tab-operating",
                                 mapOf("tabId" to categoryId.toString(), "page" to page, "pageSize" to "24")
                             )
-                            val responseMap = parseJsonToMap(rawResponse)
-                            val dataMap = responseMap["data"] as? Map<String, Any?>
-                            val list = (dataMap?.get("list") ?: dataMap?.get("items") ?: dataMap?.get("subjects")) as? List<Map<String, Any?>> 
+                            var responseMap = parseJsonToMap(rawResponse)
+                            var dataMap = responseMap["data"] as? Map<String, Any?>
+                            var list = (dataMap?.get("list") ?: dataMap?.get("items") ?: dataMap?.get("subjects")) as? List<Map<String, Any?>> 
                                 ?: responseMap["data"] as? List<Map<String, Any?>> 
                                 ?: emptyList()
-                            val formatted = formatTabSections(list)
+                            
+                            var formatted = formatTabSections(list)
+                            
+                            // If the requested tabId (e.g., Anime=8) returns empty from the official API, 
+                            // fallback to tabId=1 (Home/Movies) so we at least show content!
+                            if (formatted.isEmpty()) {
+                                Log.w("LocalMovieBoxServer", "Empty list for tabId $categoryId, falling back to tabId=1")
+                                rawResponse = makeOfficialRequest(
+                                    "GET",
+                                    "/wefeed-mobile-bff/tab-operating",
+                                    mapOf("tabId" to "1", "page" to page, "pageSize" to "24")
+                                )
+                                responseMap = parseJsonToMap(rawResponse)
+                                dataMap = responseMap["data"] as? Map<String, Any?>
+                                list = (dataMap?.get("list") ?: dataMap?.get("items") ?: dataMap?.get("subjects")) as? List<Map<String, Any?>> 
+                                    ?: responseMap["data"] as? List<Map<String, Any?>> 
+                                    ?: emptyList()
+                                formatted = formatTabSections(list)
+                            }
+                            
                             if (formatted.isEmpty()) {
                                 throw Exception("Empty list from official API")
                             }
@@ -982,7 +1173,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
         
         var isDirectMovies = true
         for (row in items) {
-            if (row.containsKey("list") || row.containsKey("items") || row.containsKey("subjects") || row.containsKey("movieList") || row.containsKey("customData") || row.containsKey("banner")) {
+            if (row.containsKey("list") || row.containsKey("items") || row.containsKey("subjects") || row.containsKey("movieList") || row.containsKey("customData") || row.containsKey("banner") || row.containsKey("rankingListData")) {
                 isDirectMovies = false
                 break
             }
@@ -990,14 +1181,18 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
         
         if (isDirectMovies && items.isNotEmpty()) {
             val mapped = items.mapNotNull { mapItem(it) }
-            if (mapped.isNotEmpty()) {
-                return listOf(mapOf("title" to "Content", "items" to mapped))
-            }
+            return listOf(mapOf(
+                "title" to "Movies",
+                "type" to "SUBJECTS_MOVIE",
+                "items" to mapped
+            ))
         }
         
         for (row in items) {
             val title = row["title"] ?: row["name"] ?: "Section"
+            if (title.toString().contains("Join Us", ignoreCase = true)) continue
             
+            val realMovies = mutableListOf<Map<String, Any?>>()
             val inner = when {
                 (row["customData"] as? Map<*, *>)?.get("items").let { it is List<*> && it.isNotEmpty() } -> {
                     val customData = row["customData"] as Map<String, Any?>
@@ -1006,6 +1201,10 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                 (row["banner"] as? Map<*, *>)?.get("banners").let { it is List<*> && it.isNotEmpty() } -> {
                     val banner = row["banner"] as Map<String, Any?>
                     banner["banners"] as List<Map<String, Any?>>
+                }
+                row["rankingListData"].let { it is Map<*, *> && it.isNotEmpty() } -> {
+                    val ranking = row["rankingListData"] as Map<String, Any?>
+                    ranking["items"] as? List<Map<String, Any?>> ?: emptyList()
                 }
                 row["list"].let { it is List<*> && it.isNotEmpty() } -> {
                     row["list"] as List<Map<String, Any?>>
@@ -1022,7 +1221,6 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                 else -> emptyList()
             }
             
-            val realMovies = mutableListOf<Map<String, Any?>>()
             for (i in inner) {
                 val subject = i["subject"] as? Map<String, Any?>
                 if (subject != null) {
@@ -1110,9 +1308,12 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
             "subjectId" to sid,
             "id" to sid,
             "title" to title,
-            "cover" to posterUrl,
+            "name" to title,
             "poster" to posterUrl,
+            "cover" to posterUrl,
+            "rating" to score,
             "score" to score,
+            "year" to year,
             "releaseTime" to year,
             "subjectType" to (itemData["subjectType"] ?: itemData["type"] ?: 1),
             "runtime" to runtime,
@@ -1126,8 +1327,13 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
         queryParams: Map<String, String> = emptyMap(),
         bodyString: String = ""
     ): String {
-        val isCacheable = (method == "GET" || endpoint.contains("/subject-api/get") || endpoint.contains("/subject-api/see-list-v2") || endpoint.contains("/subject-api/trending") || endpoint.contains("/subject-api/top-rec") || endpoint.contains("/subject-api/search") || endpoint.contains("/subject-api/search-rank") || endpoint.contains("/subject-api/season-info") || endpoint.contains("/subject-api/play-info") || endpoint.contains("/subject-api/get-ext-captions"))
-        val cacheKey = "$method|$endpoint|${queryParams.entries.sortedBy { it.key }.joinToString("&") { "${it.key}=${it.value}" }}|$bodyString"
+        val prefs = context.getSharedPreferences("moviebox_prefs", Context.MODE_PRIVATE)
+        val spCode = prefs.getString("sp_code", "")?.takeIf { it.isNotEmpty() } ?: "404"
+        val region = prefs.getString("custom_local_iso", "")?.takeIf { it.isNotEmpty() }?.uppercase() ?: "IN"
+        val timezone = if (region == "US") "America/New_York" else if (region == "BR") "America/Sao_Paulo" else if (region == "RU") "Europe/Moscow" else "Asia/Kolkata"
+
+        val isCacheable = (method == "GET" && !endpoint.contains("profile") && !endpoint.contains("see-list-v2")) || endpoint.contains("/subject-api/get") || endpoint.contains("/subject-api/trending") || endpoint.contains("/subject-api/top-rec") || endpoint.contains("/subject-api/search") || endpoint.contains("/subject-api/search-rank") || endpoint.contains("/subject-api/season-info") || endpoint.contains("/subject-api/play-info") || endpoint.contains("/subject-api/get-ext-captions")
+        val cacheKey = "$method|$endpoint|${queryParams.entries.sortedBy { it.key }.joinToString("&") { "${it.key}=${it.value}" }}|$bodyString|$region|$spCode"
         if (isCacheable) {
             val now = System.currentTimeMillis()
             val cached = responseCache[cacheKey]
@@ -1206,11 +1412,6 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
             RequestBody.create(mediaType, bodyString)
         } else null
 
-        val prefs = context.getSharedPreferences("moviebox_prefs", Context.MODE_PRIVATE)
-        val spCode = prefs.getString("sp_code", "")?.takeIf { it.isNotEmpty() } ?: "404"
-        val region = prefs.getString("custom_local_iso", "")?.takeIf { it.isNotEmpty() }?.uppercase() ?: "IN"
-        val timezone = if (region == "US") "America/New_York" else "Asia/Kolkata"
-
         val clientInfoMap = mapOf(
             "package_name" to "com.movieboxpro.android",
             "version_name" to "16.2.1",
@@ -1218,7 +1419,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
             "os" to "android",
             "os_version" to "12",
             "install_ch" to "googleplay",
-            "device_id" to "8c5da15be6ca34e724a27bc102cd8bcf",
+            "device_id" to getDeviceId(),
             "install_store" to "googleplay",
             "gaid" to "",
             "brand" to "google",
@@ -1300,6 +1501,11 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
             val base64Sig = android.util.Base64.encodeToString(signatureDigest, android.util.Base64.NO_WRAP)
             signatureHeader = "$timestamp|2|$base64Sig"
 
+            val prefs = context.getSharedPreferences("moviebox_prefs", Context.MODE_PRIVATE)
+            val spCode = prefs.getString("sp_code", "")?.takeIf { it.isNotEmpty() } ?: "404"
+            val region = prefs.getString("custom_local_iso", "")?.takeIf { it.isNotEmpty() }?.uppercase() ?: "IN"
+            val timezone = if (region == "US") "America/New_York" else if (region == "BR") "America/Sao_Paulo" else if (region == "RU") "Europe/Moscow" else "Asia/Kolkata"
+
             val clientInfoMap = mapOf(
                 "package_name" to "com.movieboxpro.android",
                 "version_name" to "16.2.1",
@@ -1307,16 +1513,16 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                 "os" to "android",
                 "os_version" to "12",
                 "install_ch" to "googleplay",
-                "device_id" to "8c5da15be6ca34e724a27bc102cd8bcf",
+                "device_id" to getDeviceId(),
                 "install_store" to "googleplay",
                 "gaid" to "",
                 "brand" to "google",
                 "model" to "Pixel 6",
                 "system_language" to "en",
                 "net" to "wifi",
-                "region" to "IN",
-                "timezone" to "Asia/Kolkata",
-                "sp_code" to "404"
+                "region" to region,
+                "timezone" to timezone,
+                "sp_code" to spCode
             )
             val clientInfoJson = toJsonString(clientInfoMap)
 
@@ -1327,7 +1533,7 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                 .header("Content-Type", "application/json;charset=UTF-8")
                 .header("X-Sign-Version", "2.0")
                 .header("appid", "4U01pxRu278GqCZKY9")
-                .header("region", "IN")
+                .header("region", region)
                 .header("lang", "en")
                 .header("os", "android")
                 .header("X-Timestamp", timestamp)
@@ -1362,6 +1568,16 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
         } catch (e: Exception) {
             android.util.Log.e("LocalMovieBoxServer", "Guest bootstrap exception", e)
         }
+    }
+
+    private fun getDeviceId(): String {
+        val prefs = context.getSharedPreferences("moviebox_prefs", Context.MODE_PRIVATE)
+        var deviceId = prefs.getString("device_id", null)
+        if (deviceId.isNullOrEmpty()) {
+            deviceId = java.util.UUID.randomUUID().toString().replace("-", "")
+            prefs.edit().putString("device_id", deviceId).apply()
+        }
+        return deviceId
     }
 
     private fun md5(input: String): String {

@@ -68,6 +68,23 @@ class MovieRepository(
         }
     }
 
+    suspend fun getDetailRec(subjectId: String): List<MovieSubject> = withContext(Dispatchers.IO) {
+        try {
+            val req = mapOf(
+                "subjectId" to subjectId,
+                "page" to 1,
+                "pageSize" to 15
+            )
+            val response = api.getDetailRec(req)
+            val list = response.data?.let { data ->
+                if (data.list.isNotEmpty()) data.list else data.items
+            } ?: emptyList()
+            if (response.code == 0 || response.code == 200) list else emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun getCategoryList(categoryId: Int, page: Int = 1, pageSize: Int = 20): List<MovieSubject> = withContext(Dispatchers.IO) {
         try {
             val response = api.getList(GetListRequest(categoryId, page, pageSize))

@@ -20,8 +20,14 @@ import com.example.data.preferences.PreferencesManager
 import com.example.data.repository.MovieRepository
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
+import android.widget.Toast
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import androidx.compose.runtime.snapshotFlow
+
+data class ActiveDownload(val id: Long, val title: String, val progress: Int, val downloadedBytes: Long, val totalBytes: Long)
 
 class MovieViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = PreferencesManager(application)
@@ -57,6 +63,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     var seasonsList by mutableStateOf<List<Int>>(emptyList())
     var selectedSeason by mutableStateOf(1)
     var episodesList by mutableStateOf<List<Episode>>(emptyList())
+    var detailRecommendations by mutableStateOf<List<MovieSubject>>(emptyList())
     
     // Player / Streaming Resolver State
     var currentEpisode by mutableStateOf<Episode?>(null)
@@ -75,6 +82,8 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _categoryMovies = MutableStateFlow<List<MovieSubject>>(emptyList())
     val categoryMovies: StateFlow<List<MovieSubject>> = _categoryMovies.asStateFlow()
+    
+    private val categoryCache = mutableMapOf<Int, List<MovieSubject>>()
 
     private val _searchResults = MutableStateFlow<List<MovieSubject>>(emptyList())
     val searchResults: StateFlow<List<MovieSubject>> = _searchResults.asStateFlow()
@@ -86,9 +95,12 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchSuggestions = MutableStateFlow<List<String>>(emptyList())
     val searchSuggestions: StateFlow<List<String>> = _searchSuggestions.asStateFlow()
 
-    // Room Favorites & History Flow
-    val favoritesList: StateFlow<List<FavoriteEntity>> = repository.favorites
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _cloudFavorites = MutableStateFlow<List<FavoriteEntity>>(emptyList())
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val favoritesList: StateFlow<List<FavoriteEntity>> = snapshotFlow { isLoggedIn }
+        .flatMapLatest { loggedIn ->
+            if (loggedIn) _cloudFavorites else repository.favorites
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val historyList: StateFlow<List<HistoryEntity>> = repository.history
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -101,15 +113,332 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     var authErrorMsg by mutableStateOf("")
     var isAuthLoading by mutableStateOf(false)
 
+    // Dynamic Categories
+    private val defaultCategories = listOf(
+        2 to "Movies",
+        5 to "Series",
+        8 to "Anime",
+        18 to "Asian"
+    )
+    
+    private val _activeCategories = MutableStateFlow<List<Pair<Int, String>>>(defaultCategories)
+    val activeCategories: StateFlow<List<Pair<Int, String>>> = _activeCategories
+
+    // Download Cache State (Kept in memory for instant screen opening)
+    var downloadedFiles by mutableStateOf<List<java.io.File>>(emptyList())
+    var activeDownloads by mutableStateOf<List<ActiveDownload>>(emptyList())
+    var isDownloadScanLoaded by mutableStateOf(false)
+
+    // App In-App Update State
+    data class AppUpdateInfo(
+        val latestVersionName: String,
+        val latestVersionCode: Int,
+        val changelog: String,
+        val downloadUrl: String,
+        val isForceUpdate: Boolean
+    )
+
+    var availableUpdateInfo by mutableStateOf<AppUpdateInfo?>(null)
+    var isCheckingUpdate by mutableStateOf(false)
+    var isDownloadingUpdate by mutableStateOf(false)
+    var updateDownloadProgress by mutableStateOf(0)
+    var updateStatusMessage by mutableStateOf("")
+
     init {
         if (prefs.mockHost.contains("10.0.2.2") || prefs.mockHost.contains("run.app") || prefs.mockHost.contains("ais-dev-") || prefs.mockHost.isEmpty()) {
             prefs.mockHost = "http://127.0.0.1:3000"
             mockHost = "http://127.0.0.1:3000"
         }
+        loadActiveCategories()
         checkLockoutStatus()
         loadDashboardContent()
         checkUserSession()
         loadSearchSuggestions()
+        refreshWatchlist()
+        scanDownloadedFiles()
+        checkForUpdates(isManualCheck = false)
+    }
+
+    fun checkForUpdates(isManualCheck: Boolean = false, onComplete: ((Boolean, String) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (isManualCheck) isCheckingUpdate = true
+            try {
+                // Endpoints: jsDelivr CDN first for speed & reliability, raw GitHub as fallback
+                val endpoints = listOf(
+                    String(android.util.Base64.decode("aHR0cHM6Ly9jZG4uanNkZWxpdnIubmV0L2doL3NvbG8xMjM0NTY4OS9HZW5nYS1Xb3JsZEBtYWluL3ZlcnNpb24uanNvbg==", android.util.Base64.DEFAULT), Charsets.UTF_8).trim(),
+                    String(android.util.Base64.decode("aHR0cHM6Ly9yYXcuZ2l0aHViaXNlcmNvbnRlbnQuY29tL3NvbG8xMjM0NTY4OS9HZW5nYS1Xb3JsZC9tYWluL3ZlcnNpb24uanNvbg==", android.util.Base64.DEFAULT), Charsets.UTF_8).trim()
+                )
+
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+
+                var bodyString: String? = null
+                for (targetUrl in endpoints) {
+                    try {
+                        val finalUrl = if (targetUrl.contains("jsdelivr")) "$targetUrl?t=${System.currentTimeMillis()}" else targetUrl
+                        val request = okhttp3.Request.Builder()
+                            .url(finalUrl)
+                            .header("User-Agent", "GengaWorldApp")
+                            .header("Cache-Control", "no-cache")
+                            .build()
+
+                        val response = client.newCall(request).execute()
+                        if (response.isSuccessful) {
+                            bodyString = response.body?.string()
+                            if (!bodyString.isNullOrBlank()) break
+                        }
+                    } catch (_: Exception) {
+                        // Fallback to next candidate endpoint
+                    }
+                }
+
+                if (!bodyString.isNullOrBlank()) {
+                    val json = org.json.JSONObject(bodyString)
+
+                    val remoteVersionName = json.optString("versionName", "").trim()
+                    val remoteVersionCode = json.optInt("versionCode", 0)
+                    val forceUpdate = json.optBoolean("forceUpdate", false)
+                    val changelog = json.optString("changelog", "").trim()
+                    val downloadUrl = json.optString("downloadUrl", "").trim()
+
+                    val currentVersionCode = try {
+                        val pInfo = getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode.toInt() else pInfo.versionCode
+                    } catch (e: Exception) { 2 }
+
+                    val currentVersionName = try {
+                        getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName ?: "2.0"
+                    } catch (e: Exception) { "2.0" }
+
+                    val hasNewerVersion = (remoteVersionCode > currentVersionCode) || isVersionGreater(remoteVersionName, currentVersionName)
+
+                    if (hasNewerVersion && downloadUrl.isNotEmpty()) {
+                        val prefsManager = android.preference.PreferenceManager.getDefaultSharedPreferences(getApplication<Application>())
+                        val lastDismissedMillis = prefsManager.getLong("last_update_dismissed_timestamp", 0L)
+                        val fiveDaysMillis = 5L * 24 * 60 * 60 * 1000 // 5 days cooldown
+                        val isCooldownPassed = (System.currentTimeMillis() - lastDismissedMillis) >= fiveDaysMillis
+
+                        // Force updates always show; optional updates obey the 5-day cooldown unless manually checked from settings
+                        if (forceUpdate || isManualCheck || isCooldownPassed) {
+                            withContext(Dispatchers.Main) {
+                                availableUpdateInfo = AppUpdateInfo(
+                                    latestVersionName = remoteVersionName.ifEmpty { "v$remoteVersionCode" },
+                                    latestVersionCode = remoteVersionCode,
+                                    changelog = changelog,
+                                    downloadUrl = downloadUrl,
+                                    isForceUpdate = forceUpdate
+                                )
+                                onComplete?.invoke(true, "New update v$remoteVersionName available!")
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                if (isManualCheck) {
+                                    onComplete?.invoke(true, "New update v$remoteVersionName available!")
+                                }
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            if (isManualCheck) {
+                                onComplete?.invoke(false, "You are using the latest version ($currentVersionName)")
+                            }
+                        }
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        if (isManualCheck) onComplete?.invoke(false, "Unable to reach update server. Check your internet connection.")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (isManualCheck) onComplete?.invoke(false, "Unable to reach update server. Check your internet connection.")
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isCheckingUpdate = false
+                }
+            }
+        }
+    }
+
+    private fun isVersionGreater(remote: String, local: String): Boolean {
+        if (remote.isEmpty() || local.isEmpty()) return false
+        val rParts = remote.split(".").mapNotNull { it.filter { char -> char.isDigit() }.toIntOrNull() }
+        val lParts = local.split(".").mapNotNull { it.filter { char -> char.isDigit() }.toIntOrNull() }
+        val maxLen = maxOf(rParts.size, lParts.size)
+        for (i in 0 until maxLen) {
+            val rVal = rParts.getOrElse(i) { 0 }
+            val lVal = lParts.getOrElse(i) { 0 }
+            if (rVal > lVal) return true
+            if (rVal < lVal) return false
+        }
+        return false
+    }
+
+    fun downloadAndInstallUpdate(context: android.content.Context, downloadUrl: String) {
+        if (isDownloadingUpdate) return
+        isDownloadingUpdate = true
+        updateDownloadProgress = 0
+        updateStatusMessage = "Connecting..."
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val client = okhttp3.OkHttpClient.Builder()
+                    .followRedirects(true)
+                    .followSslRedirects(true)
+                    .build()
+
+                val request = okhttp3.Request.Builder()
+                    .url(downloadUrl)
+                    .header("User-Agent", "GengaWorldApp")
+                    .build()
+
+                val response = client.newCall(request).execute()
+                if (!response.isSuccessful) {
+                    withContext(Dispatchers.Main) {
+                        isDownloadingUpdate = false
+                        Toast.makeText(context, "Download failed: HTTP ${response.code}", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+
+                val body = response.body ?: throw Exception("Empty response body")
+                val contentLength = body.contentLength()
+                val cacheDir = context.externalCacheDir ?: context.cacheDir
+                val apkFile = java.io.File(cacheDir, "update.apk")
+                if (apkFile.exists()) apkFile.delete()
+
+                val inputStream = body.byteStream()
+                val outputStream = java.io.FileOutputStream(apkFile)
+                val buffer = ByteArray(8 * 1024)
+                var bytesRead: Int
+                var totalBytesRead: Long = 0
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    if (contentLength > 0) {
+                        val progress = ((totalBytesRead * 100) / contentLength).toInt()
+                        withContext(Dispatchers.Main) {
+                            updateDownloadProgress = progress
+                            updateStatusMessage = "$progress%"
+                        }
+                    }
+                }
+                outputStream.flush()
+                outputStream.close()
+                inputStream.close()
+
+                withContext(Dispatchers.Main) {
+                    isDownloadingUpdate = false
+                    updateStatusMessage = "Ready to install"
+                    installApk(context, apkFile)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDownloadingUpdate = false
+                    Toast.makeText(context, "Update download failed. Check your internet connection.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun installApk(context: android.content.Context, apkFile: java.io.File) {
+        try {
+            val apkUri = androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                apkFile
+            )
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Failed to launch installer: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun scanDownloadedFiles() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val dir = java.io.File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+                    "Genga World"
+                )
+                val files = if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.filter { it.extension.equals("mp4", ignoreCase = true) }?.sortedBy { it.name } ?: emptyList()
+                } else {
+                    emptyList()
+                }
+                withContext(Dispatchers.Main) {
+                    downloadedFiles = files
+                    isDownloadScanLoaded = true
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isDownloadScanLoaded = true
+                }
+            }
+        }
+    }
+    
+    fun loadActiveCategories() {
+        val saved = prefs.activeCategories
+        if (saved != null) {
+            try {
+                val list = saved.split(",").mapNotNull { 
+                    val parts = it.split(":")
+                    if (parts.size == 2) parts[0].toInt() to parts[1] else null
+                }
+                // Ensure default categories are always present at the start
+                val combined = defaultCategories.toMutableList()
+                list.forEach { savedCat ->
+                    if (combined.none { it.first == savedCat.first }) {
+                        combined.add(savedCat)
+                    }
+                }
+                _activeCategories.value = combined
+            } catch (e: Exception) {
+                _activeCategories.value = defaultCategories
+            }
+        } else {
+            _activeCategories.value = defaultCategories
+        }
+    }
+    
+    fun addCategory(id: Int, name: String) {
+        val current = _activeCategories.value.toMutableList()
+        if (current.none { it.first == id }) {
+            current.add(id to name)
+            saveActiveCategories(current)
+        }
+    }
+    
+    fun removeCategory(id: Int) {
+        val current = _activeCategories.value.toMutableList()
+        if (defaultCategories.none { it.first == id }) {
+            current.removeAll { it.first == id }
+            categoryCache.remove(id)
+            saveActiveCategories(current)
+
+            // If user removed the currently active tab, switch back to the first available category
+            if (selectedCategoryTab == id) {
+                val fallbackCategory = current.firstOrNull()?.first ?: defaultCategories.first().first
+                loadCategoryList(fallbackCategory)
+            }
+        }
+    }
+    
+    private fun saveActiveCategories(list: List<Pair<Int, String>>) {
+        _activeCategories.value = list
+        // Save only the extra categories
+        val extraCategories = list.filter { cat -> defaultCategories.none { it.first == cat.first } }
+        val toSave = extraCategories.joinToString(",") { "${it.first}:${it.second}" }
+        prefs.activeCategories = toSave
     }
 
     fun loadSearchSuggestions(query: String? = null) {
@@ -171,6 +500,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                     isLoggedIn = true
                     currentUserProfile = response.user
                     authErrorMsg = ""
+                    syncLocalFavoritesToCloud(api)
                     loadDashboardContent()
                     onSuccess()
                 } else {
@@ -197,6 +527,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                     isLoggedIn = true
                     currentUserProfile = response.user
                     authErrorMsg = ""
+                    syncLocalFavoritesToCloud(api)
                     loadDashboardContent()
                     onSuccess()
                 } else {
@@ -241,7 +572,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                 // 1. Fetch STS token
                 val stsRes = api.getStsToken()
                 val code = stsRes["code"]?.toString()?.toDoubleOrNull()?.toInt() ?: -1
-                if (code != 0) {
+                if (code != 0 && stsRes["message"] != "success" && stsRes["message"] != "ok") {
                     onError("Failed to fetch upload token: ${stsRes["message"]}")
                     return@launch
                 }
@@ -257,45 +588,69 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                 val securityToken = data["securityToken"]?.toString() ?: ""
                 val bucket = data["bucket"]?.toString() ?: ""
                 val endpoint = data["endPoint"]?.toString() ?: ""
+                val region = data["regionId"]?.toString() ?: "ap-south-1"
 
                 if (accessKeyId.isEmpty() || accessKeySecret.isEmpty() || securityToken.isEmpty()) {
                     onError("STS credentials are empty")
                     return@launch
                 }
 
-                // 2. Generate unique key and date
+                // 2. Generate unique key
                 val timestamp = System.currentTimeMillis()
                 val objectKey = "OSS${timestamp}_avatar.jpg"
 
-                val sdf = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US)
-                sdf.timeZone = java.util.TimeZone.getTimeZone("GMT")
-                val dateGmt = sdf.format(java.util.Date())
+                // 3. Generate date formats for AWS V4
+                val sdfAmz = java.text.SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                val sdfDate = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                val now = java.util.Date()
+                val amzDate = sdfAmz.format(now)
+                val dateStamp = sdfDate.format(now)
 
-                // 3. Generate signature
-                val canonicalHeaders = "x-oss-object-acl:public-read\nx-oss-security-token:$securityToken\n"
-                val canonicalResource = "/$bucket/$objectKey"
-                val stringToSign = "PUT\n\nimage/jpeg\n$dateGmt\n$canonicalHeaders$canonicalResource"
+                // 4. Payload hash
+                val md256 = java.security.MessageDigest.getInstance("SHA-256")
+                val payloadHash = md256.digest(imageBytes).joinToString("") { "%02x".format(it) }
 
-                val mac = javax.crypto.Mac.getInstance("HmacSHA1")
-                val secretKeySpec = javax.crypto.spec.SecretKeySpec(accessKeySecret.toByteArray(Charsets.UTF_8), "HmacSHA1")
-                mac.init(secretKeySpec)
-                val signBytes = mac.doFinal(stringToSign.toByteArray(Charsets.UTF_8))
-                val signature = android.util.Base64.encodeToString(signBytes, android.util.Base64.NO_WRAP)
+                val cleanEndpoint = endpoint.replace("https://", "").replace("http://", "").removeSuffix("/")
+                val host = "$bucket.$cleanEndpoint"
+                val putUrl = "https://$host/$objectKey"
 
-                // 4. Execute PUT request to Aliyun OSS
+                val canonicalUri = "/$objectKey"
+                val canonicalQuerystring = ""
+                val canonicalHeaders = "host:$host\nx-amz-content-sha256:$payloadHash\nx-amz-date:$amzDate\nx-amz-security-token:$securityToken\n"
+                val signedHeaders = "host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+                val canonicalRequest = "PUT\n$canonicalUri\n$canonicalQuerystring\n$canonicalHeaders\n$signedHeaders\n$payloadHash"
+
+                val credentialScope = "$dateStamp/$region/s3/aws4_request"
+                val stringToSign = "AWS4-HMAC-SHA256\n$amzDate\n$credentialScope\n${md256.digest(canonicalRequest.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }}"
+
+                fun hmacSha256(key: ByteArray, message: String): ByteArray {
+                    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+                    mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+                    return mac.doFinal(message.toByteArray(Charsets.UTF_8))
+                }
+
+                val kDate = hmacSha256(("AWS4$accessKeySecret").toByteArray(Charsets.UTF_8), dateStamp)
+                val kRegion = hmacSha256(kDate, region)
+                val kService = hmacSha256(kRegion, "s3")
+                val kSigning = hmacSha256(kService, "aws4_request")
+                val signatureBytes = hmacSha256(kSigning, stringToSign)
+                val signature = signatureBytes.joinToString("") { "%02x".format(it) }
+
+                val authorizationHeader = "AWS4-HMAC-SHA256 Credential=$accessKeyId/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signature"
+
+                // 5. Execute PUT request to AWS S3
                 val okHttpClient = okhttp3.OkHttpClient()
                 val requestBody = okhttp3.RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageBytes)
-                val putUrl = "https://$bucket.$endpoint/$objectKey"
 
                 val request = okhttp3.Request.Builder()
                     .url(putUrl)
                     .put(requestBody)
-                    .header("Host", "$bucket.$endpoint")
-                    .header("Date", dateGmt)
+                    .header("Host", host)
+                    .header("x-amz-date", amzDate)
+                    .header("x-amz-content-sha256", payloadHash)
+                    .header("x-amz-security-token", securityToken)
+                    .header("Authorization", authorizationHeader)
                     .header("Content-Type", "image/jpeg")
-                    .header("x-oss-object-acl", "public-read")
-                    .header("x-oss-security-token", securityToken)
-                    .header("Authorization", "OSS $accessKeyId:$signature")
                     .build()
 
                 val response = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -303,16 +658,19 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (response.isSuccessful) {
-                    // 5. Update user profile on official server
+                    // 6. Update user profile on official server
                     val modifyRes = api.modifyProfile(mapOf("nickname" to nickname, "avatar" to putUrl))
                     if (modifyRes.code == 0 || modifyRes.message == "ok") {
+                        currentUserProfile = currentUserProfile?.copy(avatar = putUrl)
                         checkUserSession()
                         onSuccess()
                     } else {
                         onError(modifyRes.message.ifEmpty { "Failed to update profile" })
                     }
                 } else {
-                    onError("Upload to AliCloud OSS failed: ${response.message}")
+                    val errorBody = response.body?.string()
+                    val errorDetail = if (errorBody.isNullOrEmpty()) response.message else errorBody
+                    onError("Upload to Amazon S3 failed: HTTP ${response.code} $errorDetail")
                 }
             } catch (e: Exception) {
                 onError(parseErrorMessage(e))
@@ -398,6 +756,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         customMcc = mcc
         customCountryIso = iso
         loadDashboardContent()
+        loadSearchSuggestions()
     }
 
     fun resetSandbox() {
@@ -419,14 +778,52 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                 val trending = repository.getTrending(1, 20)
                 _trendingMovies.value = trending
                 val categories = repository.getCategoryList(selectedCategoryTab, 1, 30)
+                categoryCache[selectedCategoryTab] = categories
                 _categoryMovies.value = categories
                 
-                // Pre-fetch details in the background for instant load
+                // Pre-fetch details and warm up poster image cache for instant rendering
                 trending.take(12).forEach { item ->
                     launch { repository.getDetail(item.id) }
+                    if (item.poster.isNotEmpty()) {
+                        launch {
+                            val request = coil.request.ImageRequest.Builder(getApplication<Application>())
+                                .data(item.poster)
+                                .build()
+                            coil.Coil.imageLoader(getApplication<Application>()).enqueue(request)
+                        }
+                    }
                 }
-                categories.take(12).forEach { item ->
+                categories.take(15).forEach { item ->
                     launch { repository.getDetail(item.id) }
+                    if (item.poster.isNotEmpty()) {
+                        launch {
+                            val request = coil.request.ImageRequest.Builder(getApplication<Application>())
+                                .data(item.poster)
+                                .build()
+                            coil.Coil.imageLoader(getApplication<Application>()).enqueue(request)
+                        }
+                    }
+                }
+
+                // Pre-fetch other categories in the background for instant switching
+                _activeCategories.value.filter { it.first != selectedCategoryTab }.forEach { cat ->
+                    launch {
+                        try {
+                            val catData = repository.getCategoryList(cat.first, 1, 30)
+                            categoryCache[cat.first] = catData
+                            // Pre-load top posters for upcoming tabs
+                            catData.take(8).forEach { catItem ->
+                                if (catItem.poster.isNotEmpty()) {
+                                    val req = coil.request.ImageRequest.Builder(getApplication<Application>())
+                                        .data(catItem.poster)
+                                        .build()
+                                    coil.Coil.imageLoader(getApplication<Application>()).enqueue(req)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("MovieViewModel", "Prefetch failed for category ${cat.first}", e)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MovieViewModel", "Failed to load dashboard content", e)
@@ -438,12 +835,32 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadCategoryList(categoryId: Int) {
         selectedCategoryTab = categoryId
+        
+        // Immediately show cached data if available for instant switching
+        val cached = categoryCache[categoryId]
+        if (cached != null && cached.isNotEmpty()) {
+            _categoryMovies.value = cached
+        }
+
         viewModelScope.launch {
-            val categories = repository.getCategoryList(categoryId, 1, 30)
-            _categoryMovies.value = categories
-            // Pre-fetch details in the background
-            categories.take(12).forEach { item ->
-                launch { repository.getDetail(item.id) }
+            try {
+                val categories = repository.getCategoryList(categoryId, 1, 30)
+                categoryCache[categoryId] = categories
+                _categoryMovies.value = categories
+                // Pre-fetch details and warm up posters in the background
+                categories.take(15).forEach { item ->
+                    launch { repository.getDetail(item.id) }
+                    if (item.poster.isNotEmpty()) {
+                        launch {
+                            val request = coil.request.ImageRequest.Builder(getApplication<Application>())
+                                .data(item.poster)
+                                .build()
+                            coil.Coil.imageLoader(getApplication<Application>()).enqueue(request)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MovieViewModel", "Failed to load category list", e)
             }
         }
     }
@@ -512,6 +929,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         maxSeasonLimitConstraint = parseMaxSeasonFromName(subject.name)
         currentEpisode = null
         playInfo = null
+        detailRecommendations = emptyList()
 
         // Check cache for instant load
         val cachedDetail = repository.getCachedDetail(subject.id)
@@ -531,6 +949,11 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         viewModelScope.launch {
+            try {
+                detailRecommendations = repository.getDetailRec(subject.id)
+            } catch (e: Exception) {
+                // Ignore failure for recommendations
+            }
             try {
                 val fullDetail = repository.getDetail(subject.id)
                 if (fullDetail != null) {
@@ -581,21 +1004,22 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                     episode.episodeNumber,
                     resourceId = selectedResource?.resourceId
                 )
-                playInfo = resolvedPlayInfo
-                selectedStream = resolvedPlayInfo.streamList.firstOrNull()
-                val isDubSelected = selectedResource?.name?.contains("dub", ignoreCase = true) == true
-                selectedSubtitle = if (isDubSelected) null else resolvedPlayInfo.subTitleList.firstOrNull()
-                isPlaying = true
-                playbackProgressMs = 0L
-                mediaDurationMs = 1800000L // default to 30 mins
-                
-                // Check Room for previous resume progress
+                // Fetch history before setting playInfo to prevent race condition with ExoPlayer
                 val historyId = "${subject.id}_S${episode.seasonNumber}_E${episode.episodeNumber}"
                 val existingProgress = repository.getHistoryById(historyId)
                 if (existingProgress != null) {
                     playbackProgressMs = existingProgress.seeTime
                     mediaDurationMs = existingProgress.totalTime
+                } else {
+                    playbackProgressMs = 0L
+                    mediaDurationMs = 0L
                 }
+
+                selectedStream = resolvedPlayInfo.streamList.firstOrNull()
+                val isDubSelected = selectedResource?.name?.contains("dub", ignoreCase = true) == true
+                selectedSubtitle = if (isDubSelected) null else resolvedPlayInfo.subTitleList.firstOrNull()
+                isPlaying = true
+                playInfo = resolvedPlayInfo
             } catch (e: Exception) {
                 android.util.Log.e("MovieViewModel", "Failed to fetch episode play info", e)
             } finally {
@@ -615,19 +1039,21 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                     0,
                     resourceId = selectedResource?.resourceId
                 )
-                playInfo = resolvedPlayInfo
-                selectedStream = resolvedPlayInfo.streamList.firstOrNull()
-                val isDubSelected = selectedResource?.name?.contains("dub", ignoreCase = true) == true
-                selectedSubtitle = if (isDubSelected) null else resolvedPlayInfo.subTitleList.firstOrNull()
-                isPlaying = true
-                playbackProgressMs = 0L
-                mediaDurationMs = 7200000L // default to 2 hours
-                
+                // Fetch history before setting playInfo to prevent race condition with ExoPlayer
                 val existingProgress = repository.getHistoryById(subject.id)
                 if (existingProgress != null) {
                     playbackProgressMs = existingProgress.seeTime
                     mediaDurationMs = existingProgress.totalTime
+                } else {
+                    playbackProgressMs = 0L
+                    mediaDurationMs = 0L
                 }
+
+                selectedStream = resolvedPlayInfo.streamList.firstOrNull()
+                val isDubSelected = selectedResource?.name?.contains("dub", ignoreCase = true) == true
+                selectedSubtitle = if (isDubSelected) null else resolvedPlayInfo.subTitleList.firstOrNull()
+                isPlaying = true
+                playInfo = resolvedPlayInfo
             } catch (e: Exception) {
                 android.util.Log.e("MovieViewModel", "Failed to fetch movie play info", e)
             } finally {
@@ -686,43 +1112,55 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Toggle Favorite operation via repository and cloud sync
+    // Toggle Favorite operation directly via cloud (no local cache)
     fun toggleFavorite(subject: MovieSubject) {
         viewModelScope.launch {
-            val isFav = repository.isFavoriteDirect(subject.id)
-            val nextState = !isFav
-            
-            if (isFav) {
-                repository.deleteFavorite(subject.id)
-            } else {
-                repository.insertFavorite(
-                    FavoriteEntity(
-                        id = subject.id,
-                        name = subject.name,
-                        poster = subject.poster,
-                        isTvShow = subject.isTvShow,
-                        rating = subject.rating,
-                        year = subject.year
-                    )
-                )
-            }
-
             if (isLoggedIn) {
+                val currentList = _cloudFavorites.value
+                val isFav = currentList.any { it.id == subject.id }
+                val nextState = !isFav
+                if (isFav) {
+                    _cloudFavorites.value = currentList.filter { it.id != subject.id }
+                } else {
+                    _cloudFavorites.value = listOf(
+                        FavoriteEntity(subject.id, subject.name, subject.poster, subject.isTvShow, subject.rating, subject.year)
+                    ) + currentList
+                }
                 try {
                     val api = MovieBoxRetrofitClient.getApi(prefs)
-                    val action = if (nextState) 1 else 2
-                    val subjectType = if (subject.isTvShow) 2 else 1
-                    api.toggleWatchlist(com.example.data.model.WantToSeeRequest(subject.id, action, subjectType))
-                    checkUserSession()
-                } catch (e: Exception) {
-                    // Ignore or log background error
+                    api.toggleWatchlist(com.example.data.model.WantToSeeRequest(subject.id, if (nextState) 1 else 2, if (subject.isTvShow) 2 else 1))
+                } catch (e: Exception) {}
+            } else {
+                val isFav = repository.isFavoriteDirect(subject.id)
+                if (isFav) {
+                    repository.deleteFavorite(subject.id)
+                } else {
+                    repository.insertFavorite(
+                        FavoriteEntity(subject.id, subject.name, subject.poster, subject.isTvShow, subject.rating, subject.year)
+                    )
                 }
             }
         }
     }
 
+    private suspend fun syncLocalFavoritesToCloud(api: com.example.data.network.MovieBoxApi) {
+        try {
+            val localFavs = repository.favorites.first()
+            if (localFavs.isNotEmpty()) {
+                localFavs.forEach { fav ->
+                    try {
+                        api.toggleWatchlist(com.example.data.model.WantToSeeRequest(fav.id, 1, if (fav.isTvShow) 2 else 1))
+                    } catch (e: Exception) {}
+                }
+                repository.syncFavorites(emptyList()) // Clear local database after sync
+            }
+        } catch (e: Exception) {}
+    }
+
     fun refreshWatchlist() {
-        if (!isLoggedIn) return
+        if (!isLoggedIn) {
+            return // Keep local favorites if not logged in
+        }
         viewModelScope.launch {
             try {
                 val api = MovieBoxRetrofitClient.getApi(prefs)
@@ -740,7 +1178,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
                             year = if (sub.releaseDate.length >= 4) sub.releaseDate.take(4) else ""
                         )
                     }
-                    repository.syncFavorites(favorites)
+                    _cloudFavorites.value = favorites
                 }
             } catch (e: Exception) {
                 // Ignore or log error
@@ -749,7 +1187,7 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun isFavoriteFlow(id: String): Flow<Boolean> {
-        return repository.isFavorite(id)
+        return favoritesList.map { list -> list.any { it.id == id } }
     }
 
     // Save playback position tick

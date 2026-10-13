@@ -16,8 +16,8 @@ android {
     applicationId = "com.gengaworld.app"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -72,6 +72,7 @@ dependencies {
   implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
+  implementation("androidx.appcompat:appcompat:1.6.1")
   // implementation(libs.androidx.camera.camera2)
   // implementation(libs.androidx.camera.core)
   // implementation(libs.androidx.camera.lifecycle)
@@ -123,4 +124,6 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.exoplayer.dash)
   implementation(libs.androidx.media3.exoplayer.hls)
+  implementation("com.google.android.gms:play-services-cast-framework:21.4.0")
+  implementation("androidx.mediarouter:mediarouter:1.7.0")
 }

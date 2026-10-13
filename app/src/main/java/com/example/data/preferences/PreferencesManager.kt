@@ -27,6 +27,10 @@ class PreferencesManager(context: Context) {
     var localCountry: String
         get() = prefs.getString(KEY_LOCAL_COUNTRY, "India") ?: "India"
         set(value) = prefs.edit().putString(KEY_LOCAL_COUNTRY, value).apply()
+        
+    var activeCategories: String?
+        get() = prefs.getString("active_categories", null)
+        set(value) = prefs.edit().putString("active_categories", value).apply()
 
     var countryCode: String
         get() = prefs.getString(KEY_COUNTRY_CODE, "91") ?: "91"

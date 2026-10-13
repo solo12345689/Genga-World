@@ -1,0 +1,7 @@
+{
+  "versionName": "2.0",
+  "versionCode": 2,
+  "forceUpdate": false,
+  "changelog": "• Download content for offline watching\n• Cast to TV with Google Cast support\n• Choose Country / Location for regional content\n• Manage categories (customize Home Feed tabs)\n• In-app updates & Telegram community integration",
+  "downloadUrl": "https://github.com/solo12345689/Genga-World/releases/download/v2.0/app-release.apk"
+}
