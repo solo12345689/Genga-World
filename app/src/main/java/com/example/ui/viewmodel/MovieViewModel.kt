@@ -53,6 +53,13 @@ class MovieViewModel(application: Application) : AndroidViewModel(application) {
     var customMcc by mutableStateOf(prefs.spCode.ifEmpty { "40401" })
     var customCountryIso by mutableStateOf(prefs.localIso.ifEmpty { "in" })
     var mockHost by mutableStateOf(prefs.mockHost)
+    var apiHost by mutableStateOf(prefs.apiHost)
+
+    fun updateApiHost(newHost: String) {
+        prefs.apiHost = newHost
+        apiHost = newHost
+        loadDashboardContent()
+    }
 
     // UI Dashboard State
     var selectedCategoryTab by mutableStateOf(2) // Defaults to Movies (ID 2)

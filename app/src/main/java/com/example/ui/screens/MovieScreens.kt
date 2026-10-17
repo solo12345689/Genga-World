@@ -4485,6 +4485,7 @@ fun SettingsScreen(viewModel: MovieViewModel, onNavigateToHistory: () -> Unit = 
 
                 // Location / Region Selection Section
                 var showLocationDialog by remember { mutableStateOf(false) }
+                var showApiHostDialog by remember { mutableStateOf(false) }
 
                 Card(
                     modifier = Modifier
@@ -4529,6 +4530,103 @@ fun SettingsScreen(viewModel: MovieViewModel, onNavigateToHistory: () -> Unit = 
                             }
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Select API Host Section
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = ObsidianCard),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showApiHostDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.Dns,
+                                contentDescription = "API Host",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Select API Host",
+                                    fontSize = 16.sp,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = viewModel.apiHost,
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Filled.ChevronRight,
+                            contentDescription = "Navigate",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                if (showApiHostDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showApiHostDialog = false },
+                        title = { Text("Select API Host", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                        text = {
+                            Column {
+                                val hosts = listOf(
+                                    "api6.aoneroom.com",
+                                    "api5.aoneroom.com",
+                                    "api4.aoneroom.com",
+                                    "api4sg.aoneroom.com",
+                                    "api3.aoneroom.com"
+                                )
+                                hosts.forEach { host ->
+                                    val isSelected = viewModel.apiHost == host
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { 
+                                                viewModel.updateApiHost(host)
+                                                showApiHostDialog = false
+                                            }
+                                            .padding(vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = { 
+                                                viewModel.updateApiHost(host)
+                                                showApiHostDialog = false
+                                            },
+                                            colors = RadioButtonDefaults.colors(selectedColor = CinematicRed, unselectedColor = Color.Gray)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Text(host, color = TextPrimary, fontSize = 16.sp)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showApiHostDialog = false }) {
+                                Text("Cancel", color = TextSecondary, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        containerColor = ObsidianCard
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

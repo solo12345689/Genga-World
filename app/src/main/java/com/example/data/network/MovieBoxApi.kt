@@ -431,9 +431,23 @@ fun rewriteStreamJson(jsonStr: String): String {
     val url = parsed["url"] as? String ?: ""
     val cookie = parsed["cookie"] as? String ?: ""
     val resolutions = parsed["resolutions"] as? String ?: ""
+    val inputStreams = parsed["streamList"] as? List<Map<String, Any?>>
     
     val streamList = mutableListOf<Map<String, Any?>>()
-    if (url.isNotEmpty()) {
+    
+    if (inputStreams != null && inputStreams.isNotEmpty()) {
+        inputStreams.forEach { st ->
+            val sUrl = st["url"]?.toString() ?: ""
+            if (sUrl.isNotEmpty()) {
+                streamList.add(mapOf(
+                    "quality" to (st["quality"] ?: "Auto"),
+                    "url" to sUrl,
+                    "size" to (st["size"] ?: "Dynamic"),
+                    "cookie" to (st["cookie"] ?: cookie)
+                ))
+            }
+        }
+    } else if (url.isNotEmpty()) {
         if (resolutions.isNotEmpty()) {
             streamList.add(mapOf(
                 "quality" to "Auto",
@@ -445,7 +459,7 @@ fun rewriteStreamJson(jsonStr: String): String {
                 val clean = res.trim()
                 if (clean.isNotEmpty()) {
                     streamList.add(mapOf(
-                        "quality" to "${clean}p",
+                        "quality" to if (clean.endsWith("p")) clean else "${clean}p",
                         "url" to url,
                         "size" to "Dynamic",
                         "cookie" to cookie

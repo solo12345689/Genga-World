@@ -13,8 +13,13 @@ class PreferencesManager(context: Context) {
         const val KEY_COUNTRY_CODE = "custom_country_code"
         const val KEY_IS_DEVELOPER = "is_developer"
         const val KEY_MOCK_HOST = "mock_host_key"
+        const val KEY_API_HOST = "api_host_key"
         const val KEY_SESSION_ID_COOKIE = "session_id_cookie"
     }
+    
+    var apiHost: String
+        get() = prefs.getString(KEY_API_HOST, "api6.aoneroom.com") ?: "api6.aoneroom.com"
+        set(value) = prefs.edit().putString(KEY_API_HOST, value).apply()
 
     var spCode: String
         get() = prefs.getString(KEY_SP_CODE, "40401") ?: "40401"

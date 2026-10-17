@@ -919,77 +919,50 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                             }
                         }
 
-                        val prioritizedStreams = streams.map { it }
-                        var workingUrl = ""
-                        var workingCookie = globalCookie.toString()
-
-                        if (prioritizedStreams.isNotEmpty()) {
-                            val sortedDescending = prioritizedStreams.sortedWith { s1, s2 ->
-                                val u1 = (s1["url"] ?: "").toString().lowercase()
-                                val u2 = (s2["url"] ?: "").toString().lowercase()
-                                
-                                fun getScore(u: String): Int {
-                                    val isH265 = u.contains("h265") || u.contains("x265") || u.contains("hev1")
-                                    if (u.contains(".m3u8")) return if (isH265) 3 else 10
-                                    if (u.contains(".mpd")) return if (isH265) 2 else 9
-                                    if (u.contains(".mp4")) return if (isH265) 1 else 8
-                                    return if (isH265) 0 else 5
-                                }
-                                getScore(u2).compareTo(getScore(u1))
-                            }
+                        val prioritizedStreams = streams
+                        val cleanedStreams = mutableListOf<Map<String, Any?>>()
+                        for (st in prioritizedStreams) {
+                            var url = st["url"]?.toString() ?: ""
+                            val cookie = st["signCookie"]?.toString() ?: globalCookie.toString()
+                            var isDummy = url.contains("macdn.aoneroom.com") || url.contains("please_update") || url.contains("update_app") || url.contains("b164fbfb43")
                             
-                            val bestStream = sortedDescending[0]
-                            
-                            var url = bestStream["url"]?.toString() ?: ""
-                            val bestCookie = bestStream["signCookie"]?.toString() ?: ""
-                            var isDummy = url.contains("macdn.aoneroom.com") || url.contains("please_update") || url.contains("update_app")
-                            
-                            // Anti-Piracy Dummy Video Bypass
-                            if (bestCookie.contains("urlprefix=")) {
+                            var bypassedUrl = url
+                            if (isDummy && cookie.contains("urlprefix=")) {
                                 try {
-                                    val prefixStart = bestCookie.indexOf("urlprefix=") + "urlprefix=".length
-                                    var prefixEnd = bestCookie.indexOf(":", prefixStart)
-                                    if (prefixEnd == -1) prefixEnd = bestCookie.indexOf(";", prefixStart)
-                                    if (prefixEnd == -1) prefixEnd = bestCookie.length
-                                    var base64Str = bestCookie.substring(prefixStart, prefixEnd)
-                                    
+                                    val prefixStart = cookie.indexOf("urlprefix=") + "urlprefix=".length
+                                    var prefixEnd = cookie.indexOf(":", prefixStart)
+                                    if (prefixEnd == -1) prefixEnd = cookie.indexOf(";", prefixStart)
+                                    if (prefixEnd == -1) prefixEnd = cookie.length
+                                    var base64Str = cookie.substring(prefixStart, prefixEnd)
                                     val padding = (4 - base64Str.length % 4) % 4
                                     base64Str += "=".repeat(padding)
-                                    
                                     val decodedPathBytes = android.util.Base64.decode(base64Str, android.util.Base64.DEFAULT)
                                     val decodedPath = String(decodedPathBytes, StandardCharsets.UTF_8)
-                                    url = if (decodedPath.endsWith("/")) "${decodedPath}index.m3u8" else "${decodedPath}/index.m3u8"
-                                    isDummy = false // Bypass successful, no longer a dummy!
-                                    Log.i("LocalMovieBoxServer", "Dummy video bypassed. Real URL: $url")
-                                } catch (e: Exception) {
-                                    Log.w("LocalMovieBoxServer", "Failed to bypass dummy video: ${e.message}")
-                                }
-                            }
-
-                            if (isDummy) {
-                                Log.w("LocalMovieBoxServer", "Skipping un-bypassed dummy video trap: $url")
-                                workingUrl = ""
-                            } else {
-                                workingUrl = url
+                                    bypassedUrl = if (decodedPath.endsWith("/")) "${decodedPath}index.m3u8" else "${decodedPath}/index.m3u8"
+                                    isDummy = false
+                                } catch (e: Exception) {}
                             }
                             
-                            if (bestCookie.isNotEmpty()) {
-                                workingCookie = bestCookie
-                            }
-                        }
-                        
-                        if (workingUrl.isEmpty() && prioritizedStreams.isNotEmpty()) {
-                            // Try to find any fallback stream that isn't a dummy
-                            for (st in prioritizedStreams) {
-                                val fallbackUrl = st["url"]?.toString() ?: ""
-                                val fallbackIsDummy = fallbackUrl.contains("macdn.aoneroom.com") || fallbackUrl.contains("please_update") || fallbackUrl.contains("update_app")
-                                if (!fallbackIsDummy && fallbackUrl.isNotEmpty()) {
-                                    workingUrl = fallbackUrl
-                                    workingCookie = st["signCookie"]?.toString() ?: ""
-                                    break
+                            if (!isDummy && bypassedUrl.isNotEmpty()) {
+                                var q = (st["quality"] ?: st["resolutions"] ?: "").toString()
+                                if (q.isEmpty() || q == "null") {
+                                    q = if (bypassedUrl.contains("1080")) "1080p" else if (bypassedUrl.contains("720")) "720p" else if (bypassedUrl.contains("480")) "480p" else "Auto"
                                 }
+                                if (!q.endsWith("p") && q.all { it.isDigit() }) q += "p"
+                                
+                                cleanedStreams.add(mapOf(
+                                    "quality" to q,
+                                    "url" to bypassedUrl,
+                                    "cookie" to cookie,
+                                    "size" to (st["size"] ?: st["fileSize"] ?: "Dynamic")
+                                ))
                             }
                         }
+
+                        // Ensure we have at least one working URL/Cookie for the top-level fields
+                        val firstStream = cleanedStreams.firstOrNull()
+                        val workingUrl = firstStream?.get("url")?.toString() ?: ""
+                        val workingCookie = firstStream?.get("cookie")?.toString() ?: globalCookie.toString()
 
                         val subtitlesMapped = mutableListOf<Map<String, Any?>>()
                         
@@ -1044,10 +1017,12 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
                             "url" to workingUrl,
                             "quality" to quality,
                             "cookie" to workingCookie,
+                            "streamList" to cleanedStreams,
                             "resolutions" to (if (prioritizedStreams.isNotEmpty()) prioritizedStreams[0]["resolutions"] ?: "" else ""),
                             "subtitles" to subtitlesMapped
                         )
                         Pair(200, toJsonString(responseBody))
+
                     } catch (e: Exception) {
                         Log.w("LocalMovieBoxServer", "Stream fallback triggered: ${e.message}")
                         val responseBody = mapOf(
@@ -1359,12 +1334,13 @@ class LocalMovieBoxServer(private val context: Context, private val port: Int = 
         val reversed = timestamp.reversed()
         val clientToken = "$timestamp,${md5(reversed)}"
 
+        val apiHost = prefs.getString("api_host_key", "api6.aoneroom.com") ?: "api6.aoneroom.com"
         val baseUrl = "https://api.inmoviebox.com"
         val fullUrlWithoutQuery = "$baseUrl$endpoint"
 
         val urlBuilder = fullUrlWithoutQuery.toHttpUrl().newBuilder()
         if (!queryParams.containsKey("host")) {
-            urlBuilder.addQueryParameter("host", "api.inmoviebox.com")
+            urlBuilder.addQueryParameter("host", apiHost)
         }
         queryParams.forEach { (k, v) ->
             urlBuilder.addQueryParameter(k, v)
